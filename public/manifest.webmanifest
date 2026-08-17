@@ -1,0 +1,16 @@
+{
+  "name": "共テ数学60",
+  "short_name": "数学60",
+  "description": "高校数学を1概念ずつつなぎ、共通テスト6割を目指す学習PWA。",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0c1013",
+  "theme_color": "#0c1013",
+  "lang": "ja",
+  "icons": [{
+    "src": "/favicon.svg",
+    "sizes": "any",
+    "type": "image/svg+xml",
+    "purpose": "any maskable"
+  }]
+}
