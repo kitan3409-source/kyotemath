@@ -1,5 +1,7 @@
 import { expansionIA } from "./content/expansion-ia";
 import { expansionIIBC } from "./content/expansion-iibc";
+import { gapC } from "./content/gap-c";
+import { gapIIB } from "./content/gap-ii-b";
 
 export type Problem = {
   id: string;
@@ -980,4 +982,4 @@ const baseProblemBank: Problem[] = [
   },
 ];
 
-export const problemBank: Problem[] = [...baseProblemBank, ...expansionIA, ...expansionIIBC];
+export const problemBank: Problem[] = [...baseProblemBank, ...expansionIA, ...expansionIIBC, ...gapC, ...gapIIB];
