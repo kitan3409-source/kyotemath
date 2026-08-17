@@ -18,6 +18,7 @@ import {
   isErrorCause,
   isMasteryComplete,
   normalizeErrorHistory,
+  normalizeImportedPracticeSnapshot,
   normalizePracticeSnapshot,
   retryDelayHours,
   type ErrorCause,
@@ -201,8 +202,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizePracticeForContent(value: unknown): PracticeResumeState | undefined {
-  const snapshot = normalizePracticeSnapshot(value);
+function normalizePracticeForContent(value: unknown, imported = false): PracticeResumeState | undefined {
+  const snapshot = imported ? normalizeImportedPracticeSnapshot(value) : normalizePracticeSnapshot(value);
   if (!snapshot) return undefined;
   const problem = problemBank.find((candidate) => candidate.id === snapshot.problemId);
   if (!problem) return undefined;
@@ -269,7 +270,7 @@ function normalizeImportedProgress(value: unknown): PersistedProgress | null {
     studySeconds,
     awaySeconds,
     guideSeen,
-    practice: normalizePracticeForContent(value.practice),
+    practice: normalizePracticeForContent(value.practice, true),
     errorHistory: normalizeErrorHistoryForContent(value.errorHistory),
     examSession: (() => {
       const session = normalizeExamSession(value.examSession);

@@ -7,6 +7,7 @@ import {
   isMasteryComplete,
   masteryLevelFromEvidence,
   normalizeErrorHistory,
+  normalizeImportedPracticeSnapshot,
   normalizePracticeSnapshot,
   retryDelayHours,
 } from "../app/learning-state.ts";
@@ -56,6 +57,17 @@ test("practice snapshots keep valid resume data and reject invalid phases", () =
   });
   assert.equal(normalizePracticeSnapshot({ active: true, conceptId: "I-01", problemId: "Q-I01-01", phase: "unknown" }), undefined);
   assert.equal(normalizePracticeSnapshot({ active: true, conceptId: "I-01", problemId: "Q-I01-01", phase: "question", answer: 8 })?.answer, null);
+  assert.deepEqual(normalizeImportedPracticeSnapshot(snapshot), {
+    active: true,
+    conceptId: "I-01",
+    problemId: "Q-I01-01",
+    phase: "lesson",
+    lessonStep: "overview",
+    answer: null,
+    feedback: null,
+    errorCause: null,
+    reviewCause: null,
+  });
 });
 
 test("error history drops malformed entries and keeps a bounded per-concept log", () => {

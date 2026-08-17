@@ -136,6 +136,26 @@ export function normalizePracticeSnapshot(value: unknown): PracticeResumeState |
   };
 }
 
+/**
+ * Imported practice state must re-enter through the explanation screen.
+ * A JSON file is portable data, not proof that the learner completed the
+ * current lesson in this app version, so it cannot open a question or reveal
+ * prior feedback immediately after import.
+ */
+export function normalizeImportedPracticeSnapshot(value: unknown): PracticeResumeState | undefined {
+  const snapshot = normalizePracticeSnapshot(value);
+  if (!snapshot?.active) return snapshot;
+  return {
+    ...snapshot,
+    phase: "lesson",
+    lessonStep: "overview",
+    answer: null,
+    feedback: null,
+    errorCause: null,
+    reviewCause: null,
+  };
+}
+
 export function normalizeErrorHistory(value: unknown): ErrorHistory {
   if (!isRecord(value)) return {};
   const history: ErrorHistory = {};
