@@ -1,9 +1,17 @@
-import { expansionIA } from "./content/expansion-ia";
-import { expansionIIBC } from "./content/expansion-iibc";
-import { gapC } from "./content/gap-c";
-import { gapIIB } from "./content/gap-ii-b";
-import { gapBC } from "./content/gap-bc";
-import { gapIAII } from "./content/gap-ia-ii";
+import { expansionIA } from "./content/expansion-ia.ts";
+import { expansionIIBC } from "./content/expansion-iibc.ts";
+import { gapC } from "./content/gap-c.ts";
+import { gapIIB } from "./content/gap-ii-b.ts";
+import { gapBC } from "./content/gap-bc.ts";
+import { gapIAII } from "./content/gap-ia-ii.ts";
+import { math3Problems } from "./content/math3-problems.ts";
+import { createFullScopeProblems } from "./content/full-scope-problems.ts";
+import { problemExpansionBatch01 } from "./content/problem-expansion-batch-01.ts";
+import { problemExpansionBatch02 } from "./content/problem-expansion-batch-02.ts";
+import { problemExpansionBatch03 } from "./content/problem-expansion-batch-03.ts";
+import { problemExpansionBatch04 } from "./content/problem-expansion-batch-04.ts";
+import { problemExpansionBatch05 } from "./content/problem-expansion-batch-05.ts";
+import { problemExpansionBulk } from "./content/problem-expansion-bulk.ts";
 
 export type Problem = {
   id: string;
@@ -984,4 +992,20 @@ const baseProblemBank: Problem[] = [
   },
 ];
 
-export const problemBank: Problem[] = [...baseProblemBank, ...expansionIA, ...expansionIIBC, ...gapC, ...gapIIB, ...gapBC, ...gapIAII];
+const authoredProblemBank: Problem[] = [
+  ...baseProblemBank,
+  ...expansionIA,
+  ...expansionIIBC,
+  ...gapC,
+  ...gapIIB,
+  ...gapBC,
+  ...gapIAII,
+  ...problemExpansionBatch01,
+  ...problemExpansionBatch02,
+  ...problemExpansionBatch03,
+  ...problemExpansionBatch04,
+  ...problemExpansionBatch05,
+  ...problemExpansionBulk,
+  ...math3Problems,
+];
+export const problemBank: Problem[] = [...authoredProblemBank, ...createFullScopeProblems(authoredProblemBank)];

@@ -3,8 +3,8 @@
 import { type ChangeEvent, useEffect, useRef, useState } from "react";
 import conceptData from "@/data/math-concepts.json";
 import { problemBank as baseProblemBank, type Problem } from "./problem-bank";
-import { conceptGuides as baseConceptGuides, type ConceptGuide } from "./content/concept-guides";
-import { bridgeGuides } from "./content/bridge-guides";
+import type { ConceptGuide } from "./content/concept-guides";
+import { createGeneratedLessons, fullCourseGuides } from "./content/full-course";
 import { lessonModules as baseLessonModules, type LessonModule } from "./content/lesson-modules";
 import { lessonModulesBatch02 } from "./content/lesson-modules-batch-02";
 import { lessonModulesBatch03 } from "./content/lesson-modules-batch-03";
@@ -12,12 +12,6 @@ import { lessonModulesBatch04a } from "./content/lesson-modules-batch-04a";
 import { lessonModulesBatch04b } from "./content/lesson-modules-batch-04b";
 import { lessonModulesBatch05a } from "./content/lesson-modules-batch-05a";
 import { lessonModulesBatch05b } from "./content/lesson-modules-batch-05b";
-import { problemExpansionBatch01 } from "./content/problem-expansion-batch-01";
-import { problemExpansionBatch02 } from "./content/problem-expansion-batch-02";
-import { problemExpansionBatch03 } from "./content/problem-expansion-batch-03";
-import { problemExpansionBatch04 } from "./content/problem-expansion-batch-04";
-import { problemExpansionBatch05 } from "./content/problem-expansion-batch-05";
-import { problemExpansionBulk } from "./content/problem-expansion-bulk";
 import {
   appendErrorRecord,
   ERROR_CAUSE_OPTIONS,
@@ -28,12 +22,28 @@ import {
   retryDelayHours,
   type ErrorCause,
   type ErrorHistory,
+  type AttemptEvidence,
+  isValidIsoDate,
+  type LessonStep,
   type PracticeFeedback,
   type PracticePhase,
   type PracticeResumeState,
   type RetryState,
 } from "./learning-state";
+import {
+  buildExamForms,
+  examQuestions,
+  isExamExpired,
+  normalizeExamHistory,
+  normalizeExamSession,
+  scoreExam,
+  createExamSession,
+  type ExamForm,
+  type ExamResult,
+  type ExamSession,
+} from "./exam-engine";
 import { clearProgress, loadProgress, saveProgress, type PersistedProgress } from "./storage";
+import { buildProblemStages, delayedProblemForConcept, problemForConcept, primaryConceptIdForProblem } from "./practice-engine";
 import {
   awaySeconds as sessionAwaySeconds,
   checkpointStudySession,
@@ -52,9 +62,8 @@ import {
 type Concept = (typeof conceptData.concepts)[number];
 type Tab = "today" | "map" | "practice" | "mock" | "settings";
 type CourseFilter = "all" | "bridge" | "I" | "A" | "II" | "B" | "C" | "III";
-type Attempt = { correct: number; total: number; lastAt: string; dueAt?: string; streak?: number; lastErrorCause?: ErrorCause; retry?: RetryState };
+type Attempt = { correct: number; total: number; lastAt: string; dueAt?: string; streak?: number; lastErrorCause?: ErrorCause; retry?: RetryState; evidence?: AttemptEvidence[] };
 type Feedback = PracticeFeedback;
-type MockSession = { active: boolean; index: number; answers: Record<string, number>; finished: boolean };
 type SessionEvidence = { questions: number; routeStart: number; routeEnd: number };
 type StoredStudySession = StudySessionState;
 type StoredStudySessionEnvelope = {
@@ -65,13 +74,13 @@ type StoredStudySessionEnvelope = {
 };
 
 function primaryConceptIdFor(problem: Problem) {
-  return problem.primaryConceptId ?? problem.conceptIds[0];
+  return primaryConceptIdForProblem(problem);
 }
 
 const concepts = conceptData.concepts;
 const conceptById = new Map(concepts.map((concept) => [concept.id, concept]));
-const conceptGuides: Record<string, ConceptGuide> = { ...baseConceptGuides, ...bridgeGuides };
-const lessonModules = [
+const conceptGuides: Record<string, ConceptGuide> = fullCourseGuides();
+const authoredLessonModules = [
   ...baseLessonModules,
   ...lessonModulesBatch02,
   ...lessonModulesBatch03,
@@ -80,33 +89,16 @@ const lessonModules = [
   ...lessonModulesBatch05a,
   ...lessonModulesBatch05b,
 ];
-const problemBank = [
-  ...baseProblemBank,
-  ...problemExpansionBatch01,
-  ...problemExpansionBatch02,
-  ...problemExpansionBatch03,
-  ...problemExpansionBatch04,
-  ...problemExpansionBatch05,
-  ...problemExpansionBulk,
-];
-const problemByConcept = new Map<string, Problem>();
-const problemsByConcept = new Map<string, Problem[]>();
-for (const problem of problemBank) {
-  for (const conceptId of problem.conceptIds) {
-    const related = problemsByConcept.get(conceptId) ?? [];
-    related.push(problem);
-    problemsByConcept.set(conceptId, related);
-  }
-  const primaryConceptId = primaryConceptIdFor(problem);
-  if (primaryConceptId && !problemByConcept.has(primaryConceptId)) problemByConcept.set(primaryConceptId, problem);
-}
+const lessonModules = [...authoredLessonModules, ...createGeneratedLessons(new Set(authoredLessonModules.map((lesson) => lesson.conceptId)))].map((lesson) => ({
+  ...lesson,
+  prerequisiteIds: conceptById.get(lesson.conceptId)?.requires ?? lesson.prerequisiteIds,
+}));
+const problemBank = baseProblemBank;
+const examForms = buildExamForms(problemBank);
+const examFormById = new Map(examForms.map((form) => [form.id, form]));
+const { firstByConcept: problemByConcept, problemsByConcept, stagedProblemsByConcept } = buildProblemStages(problemBank);
 const lessonByConcept = new Map<string, LessonModule>(lessonModules.map((lesson) => [lesson.conceptId, lesson]));
-const problemKindOrder: Record<Problem["kind"], number> = { quick: 0, standard: 1, transfer: 2 };
-
-function problemForConcept(conceptId: string, masteryLevel = 0) {
-  const candidates = [...(problemsByConcept.get(conceptId) ?? [])].sort((a, b) => problemKindOrder[a.kind] - problemKindOrder[b.kind] || a.id.localeCompare(b.id));
-  return candidates[Math.min(masteryLevel, Math.max(0, candidates.length - 1))] ?? problemByConcept.get(conceptId);
-}
+const problemById = new Map(problemBank.map((problem) => [problem.id, problem]));
 const conceptOrder = new Map(
   conceptData.design.recommended_order.flatMap((phase, phaseIndex) => phase.ids.map((id, idIndex) => [id, phaseIndex * 100 + idIndex] as const)),
 );
@@ -120,9 +112,33 @@ const courseLabels: Record<string, string> = {
   III: "数学III",
 };
 
+function masteryFromAttempts(source: Record<string, Attempt>) {
+  const derived: Record<string, number> = {};
+  for (const concept of concepts) {
+    const evidence = (source[concept.id]?.evidence ?? []).filter((entry) => {
+      const problem = problemById.get(entry.problemId);
+      return entry.correct
+        && (entry.source === "observed" || entry.source === "imported")
+        && Boolean(problem?.conceptIds.includes(concept.id));
+    }).slice().sort((left, right) => Date.parse(left.answeredAt) - Date.parse(right.answeredAt));
+    let level = 0;
+    let transferAt: number | undefined;
+    for (const entry of evidence) {
+      const answeredAt = Date.parse(entry.answeredAt);
+      const expected = level === 0 ? "quick" : level === 1 ? "standard" : level === 2 ? "transfer" : level === 3 ? "delayed" : "complete";
+      const matches = expected === "delayed" ? entry.kind === "transfer" && entry.delayed : expected === entry.kind && !entry.delayed;
+      if (!matches) continue;
+      if (level === 3 && transferAt !== undefined && answeredAt - transferAt < 24 * 60 * 60 * 1000) continue;
+      if (level === 2) transferAt = answeredAt;
+      level = Math.min(4, level + 1);
+    }
+    if (level > 0) derived[concept.id] = level;
+  }
+  return derived;
+}
+
 function isCommonTestConcept(concept: Concept) {
-  if (!(concept.course === "I" || concept.course === "A" || concept.course === "II" || concept.course === "B" || concept.course === "C")) return false;
-  return concept.unit !== "数学と人間の活動" && concept.unit !== "数学と社会生活" && concept.unit !== "数学的な表現の工夫";
+  return Boolean(concept.id);
 }
 const storageKeys = {
   mastery: "kyote-math-60:mastery",
@@ -133,10 +149,7 @@ const storageKeys = {
   studyDates: "kyote-math-60:study-dates",
   focus: "kyote-math-60:focus",
   studySession: "kyote-math-60:study-session",
-  mock: "kyote-math-60:mock",
 };
-const mockProblemIds = ["Q-I07-01", "Q-I16-01", "Q-I45-01", "Q-A05-01", "Q-II36-01", "Q-B04-01", "Q-B16-01", "Q-C10-01"];
-const mockProblems = mockProblemIds.map((id) => problemBank.find((problem) => problem.id === id)).filter((problem): problem is Problem => Boolean(problem));
 
 function formatTime(seconds: number) {
   const safe = Math.max(0, seconds);
@@ -153,7 +166,7 @@ function formatStudyAmount(seconds: number) {
 }
 
 function levelLabel(level: number) {
-  return ["未学習", "意味が分かる", "例題を再現", "標準を解ける", "転移できる"][level] ?? "未学習";
+  return ["未学習", "quick通過", "standard通過", "transfer通過", "遅延再テスト通過"][level] ?? "未学習";
 }
 
 function safeParse<T>(value: string | null, fallback: T): T {
@@ -223,33 +236,32 @@ function normalizeErrorHistoryForContent(value: unknown): ErrorHistory {
 
 function normalizeImportedProgress(value: unknown): PersistedProgress | null {
   if (!isRecord(value) || !isRecord(value.mastery) || !isRecord(value.attempts)) return null;
-  const nextMastery: Record<string, number> = {};
-  for (const [id, rawLevel] of Object.entries(value.mastery)) {
-    if (!conceptById.has(id) || typeof rawLevel !== "number" || !Number.isFinite(rawLevel)) continue;
-    nextMastery[id] = Math.min(4, Math.max(0, Math.round(rawLevel)));
-  }
   const nextAttempts: PersistedProgress["attempts"] = {};
   for (const [id, rawAttempt] of Object.entries(value.attempts)) {
     if (!conceptById.has(id) || !isRecord(rawAttempt)) continue;
     const correct = typeof rawAttempt.correct === "number" ? Math.max(0, Math.floor(rawAttempt.correct)) : 0;
     const total = typeof rawAttempt.total === "number" ? Math.max(correct, Math.floor(rawAttempt.total)) : 0;
     if (total === 0) continue;
-    const lastAt = typeof rawAttempt.lastAt === "string" ? rawAttempt.lastAt : new Date().toISOString();
-    const dueAt = typeof rawAttempt.dueAt === "string" ? rawAttempt.dueAt : undefined;
+    const lastAt = isValidIsoDate(rawAttempt.lastAt) ? rawAttempt.lastAt : undefined;
+    if (!lastAt) continue;
+    const dueAt = isValidIsoDate(rawAttempt.dueAt) ? rawAttempt.dueAt : undefined;
     const streak = typeof rawAttempt.streak === "number" ? Math.max(0, Math.floor(rawAttempt.streak)) : undefined;
     const lastErrorCause = isErrorCause(rawAttempt.lastErrorCause) ? rawAttempt.lastErrorCause : undefined;
     const rawRetry = isRecord(rawAttempt.retry) ? rawAttempt.retry : null;
     const retry = rawRetry
       && typeof rawRetry.problemId === "string"
       && problemBank.some((problem) => problem.id === rawRetry.problemId)
-      && typeof rawRetry.scheduledAt === "string"
+      && isValidIsoDate(rawRetry.scheduledAt)
       && isErrorCause(rawRetry.cause)
       ? { cause: rawRetry.cause, problemId: rawRetry.problemId, scheduledAt: rawRetry.scheduledAt }
       : undefined;
-    nextAttempts[id] = { correct: Math.min(correct, total), total, lastAt, dueAt, streak, lastErrorCause, retry };
+    const evidence = Array.isArray(rawAttempt.evidence)
+      ? rawAttempt.evidence.filter((entry): entry is AttemptEvidence => isRecord(entry) && typeof entry.problemId === "string" && problemBank.some((problem) => problem.id === entry.problemId) && (entry.kind === "quick" || entry.kind === "standard" || entry.kind === "transfer") && typeof entry.delayed === "boolean" && typeof entry.correct === "boolean" && isValidIsoDate(entry.answeredAt)).map((entry) => ({ ...entry, source: "imported" as const })).slice(-60)
+      : undefined;
+    nextAttempts[id] = { correct: Math.min(correct, total), total, lastAt, dueAt, streak, lastErrorCause, retry, evidence };
   }
   const dates = Array.isArray(value.studyDates)
-    ? value.studyDates.filter((date): date is string => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date))
+    ? value.studyDates.filter((date): date is string => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date) && isValidIsoDate(date))
     : [];
   const studySeconds = typeof value.studySeconds === "number" && Number.isFinite(value.studySeconds) ? Math.max(0, Math.floor(value.studySeconds)) : 0;
   const awaySeconds = typeof value.awaySeconds === "number" && Number.isFinite(value.awaySeconds) ? Math.max(0, Math.floor(value.awaySeconds)) : 0;
@@ -260,7 +272,7 @@ function normalizeImportedProgress(value: unknown): PersistedProgress | null {
     }
   }
   return {
-    mastery: nextMastery,
+    mastery: masteryFromAttempts(nextAttempts),
     attempts: nextAttempts,
     studyDates: [...new Set(dates)].slice(-180),
     studySeconds,
@@ -268,20 +280,11 @@ function normalizeImportedProgress(value: unknown): PersistedProgress | null {
     guideSeen,
     practice: normalizePracticeForContent(value.practice),
     errorHistory: normalizeErrorHistoryForContent(value.errorHistory),
-  };
-}
-
-function normalizeMockSession(value: unknown): MockSession | null {
-  if (!isRecord(value) || typeof value.active !== "boolean" || typeof value.finished !== "boolean" || typeof value.index !== "number" || !isRecord(value.answers)) return null;
-  const answers: Record<string, number> = {};
-  for (const [id, answer] of Object.entries(value.answers)) {
-    if (mockProblems.some((problem) => problem.id === id) && typeof answer === "number" && Number.isInteger(answer) && answer >= 0 && answer < 4) answers[id] = answer;
-  }
-  return {
-    active: value.active,
-    finished: value.finished,
-    index: Math.min(mockProblems.length - 1, Math.max(0, Math.floor(value.index))),
-    answers,
+    examSession: (() => {
+      const session = normalizeExamSession(value.examSession);
+      return session && examFormById.has(session.formId) ? session : undefined;
+    })(),
+    examHistory: normalizeExamHistory(value.examHistory).filter((result) => examFormById.has(result.formId)),
   };
 }
 
@@ -319,16 +322,18 @@ export default function Home() {
   const [mapSearch, setMapSearch] = useState("");
   const [practiceProblemId, setPracticeProblemId] = useState(problemByConcept.get("I-01")?.id ?? problemBank[0].id);
   const [practicePhase, setPracticePhase] = useState<PracticePhase>("lesson");
+  const [lessonStep, setLessonStep] = useState<LessonStep>("overview");
   const [practiceAnswer, setPracticeAnswer] = useState<number | null>(null);
   const [practiceFeedback, setPracticeFeedback] = useState<Feedback | null>(null);
   const [practiceResumeActive, setPracticeResumeActive] = useState(false);
   const [practiceErrorCause, setPracticeErrorCause] = useState<ErrorCause | null>(null);
   const [practiceReviewCause, setPracticeReviewCause] = useState<ErrorCause | null>(null);
   const [errorHistory, setErrorHistory] = useState<ErrorHistory>({});
-  const [mockActive, setMockActive] = useState(false);
-  const [mockIndex, setMockIndex] = useState(0);
-  const [mockAnswers, setMockAnswers] = useState<Record<string, number>>({});
-  const [mockFinished, setMockFinished] = useState(false);
+  const [examSession, setExamSession] = useState<ExamSession | null>(null);
+  const [examHistory, setExamHistory] = useState<ExamResult[]>([]);
+  const [examFormId, setExamFormId] = useState("IA-F1");
+  const [selectedOptionalSectionIds, setSelectedOptionalSectionIds] = useState(["IIBC-02", "IIBC-03", "IIBC-04"]);
+  const [examNow, setExamNow] = useState(() => Date.now());
   const [setupOpen, setSetupOpen] = useState(false);
   const [focusOpen, setFocusOpen] = useState(false);
   const [focusRunning, setFocusRunning] = useState(false);
@@ -344,6 +349,8 @@ export default function Home() {
   const [sessionStartRoute, setSessionStartRoute] = useState(0);
   const audioRef = useRef<{ context: AudioContext; node: ScriptProcessorNode } | null>(null);
   const studySessionRef = useRef<StoredStudySession | null>(null);
+  const focusAutoStopRef = useRef<string | null>(null);
+  const completeFocusSessionRef = useRef<(completedAtMs: number) => void>(() => undefined);
   const focusModalRef = useRef<HTMLElement | null>(null);
   const setupModalRef = useRef<HTMLElement | null>(null);
   const summaryModalRef = useRef<HTMLElement | null>(null);
@@ -358,6 +365,7 @@ export default function Home() {
       conceptId: selectedConceptId,
       problemId: practiceProblemId,
       phase: practicePhase,
+      lessonStep,
       answer: practiceAnswer,
       feedback: practiceFeedback,
       errorCause: practiceErrorCause,
@@ -374,15 +382,9 @@ export default function Home() {
       void loadProgress().then((progress) => {
         const storedTheme = readStored(storageKeys.theme);
         const legacyFocus = safeParse<{ totalSeconds?: number; startedAt?: number } | null>(readStored(storageKeys.focus), null);
-        const storedMock = normalizeMockSession(safeParse<unknown>(readStored(storageKeys.mock), null));
         const firstRun = !readStored(storageKeys.initialized);
-        const initialMastery = { ...progress.mastery };
-        if (firstRun) {
-          for (const concept of concepts) {
-            if (concept.course === "bridge") initialMastery[concept.id] = Math.max(initialMastery[concept.id] ?? 0, 3);
-          }
-          writeStored(storageKeys.initialized, "true");
-        }
+        const initialMastery = masteryFromAttempts(progress.attempts);
+        if (firstRun) setSetupOpen(true);
         setMastery(initialMastery);
         setAttempts(progress.attempts);
         setStudyDates(progress.studyDates);
@@ -390,27 +392,39 @@ export default function Home() {
         setAwaySeconds(progress.awaySeconds);
         setGuideSeen(progress.guideSeen);
         setErrorHistory(normalizeErrorHistoryForContent(progress.errorHistory));
+        const restoredExam = normalizeExamSession(progress.examSession);
+        const usableExam = restoredExam && examFormById.has(restoredExam.formId) ? restoredExam : null;
+        setExamSession(usableExam);
+        setExamHistory(normalizeExamHistory(progress.examHistory));
+        if (usableExam) {
+          setExamFormId(usableExam.formId);
+          setSelectedOptionalSectionIds(usableExam.selectedOptionalSectionIds);
+          setActiveTab("mock");
+        }
         const restoredPractice = normalizePracticeForContent(progress.practice);
         if (restoredPractice?.active) {
           setPracticeResumeActive(true);
           setSelectedConceptId(restoredPractice.conceptId);
           setPracticeProblemId(restoredPractice.problemId);
           setPracticePhase(restoredPractice.phase);
+          setLessonStep(restoredPractice.lessonStep);
           setPracticeAnswer(restoredPractice.answer);
           setPracticeFeedback(restoredPractice.feedback);
           setPracticeErrorCause(restoredPractice.errorCause);
           setPracticeReviewCause(restoredPractice.reviewCause);
-          setActiveTab("practice");
+          if (!usableExam) setActiveTab("practice");
+        } else {
+          setPracticeResumeActive(false);
+          setPracticePhase("lesson");
+          setLessonStep("overview");
+          setPracticeAnswer(null);
+          setPracticeFeedback(null);
+          setPracticeErrorCause(null);
+          setPracticeReviewCause(null);
         }
         setIsDark(storedTheme !== "light");
         setNoiseOn(false);
-        setSetupOpen(false);
-        if (storedMock) {
-          setMockActive(storedMock.active);
-          setMockIndex(storedMock.index);
-          setMockAnswers(storedMock.answers);
-          setMockFinished(storedMock.finished);
-        }
+        if (!firstRun) setSetupOpen(false);
         const storedSessionValue = safeParse<unknown>(readStored(storageKeys.studySession), null);
         const storedSessionEnvelope = isRecord(storedSessionValue) && isRecord(storedSessionValue.session) ? storedSessionValue : null;
         const storedSession = restoreStudySession(storedSessionEnvelope?.session ?? storedSessionValue);
@@ -440,6 +454,7 @@ export default function Home() {
           setSessionStartAttempts(storedSessionEnvelope ? safeNonNegativeInteger(storedSessionEnvelope.sessionStartAttempts, 0) : 0);
           setSessionStartRoute(storedSessionEnvelope ? safeNonNegativeInteger(storedSessionEnvelope.sessionStartRoute, 0) : 0);
           setFocusRunning(true);
+          focusAutoStopRef.current = recoveredSession.id;
           removeStored(storageKeys.focus);
         } else {
           removeStored(storageKeys.focus);
@@ -460,11 +475,58 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated) return;
+    const syncFromAnotherTab = () => {
+      void loadProgress().then((progress) => {
+        setMastery(masteryFromAttempts(progress.attempts));
+        setAttempts(progress.attempts);
+        setStudyDates(progress.studyDates);
+        setStudySeconds(progress.studySeconds);
+        setAwaySeconds(progress.awaySeconds);
+        setGuideSeen(progress.guideSeen);
+        setErrorHistory(normalizeErrorHistoryForContent(progress.errorHistory));
+        const restoredExam = normalizeExamSession(progress.examSession);
+        const usableExam = restoredExam && examFormById.has(restoredExam.formId) ? restoredExam : null;
+        setExamSession(usableExam);
+        setExamHistory(normalizeExamHistory(progress.examHistory));
+        if (usableExam) {
+          setExamFormId(usableExam.formId);
+          setSelectedOptionalSectionIds(usableExam.selectedOptionalSectionIds);
+          setActiveTab("mock");
+        }
+        const restoredPractice = normalizePracticeForContent(progress.practice);
+        if (restoredPractice?.active) {
+          setPracticeResumeActive(true);
+          setSelectedConceptId(restoredPractice.conceptId);
+          setPracticeProblemId(restoredPractice.problemId);
+          setPracticePhase(restoredPractice.phase);
+          setLessonStep(restoredPractice.lessonStep);
+          setPracticeAnswer(restoredPractice.answer);
+          setPracticeFeedback(restoredPractice.feedback);
+          setPracticeErrorCause(restoredPractice.errorCause);
+          setPracticeReviewCause(restoredPractice.reviewCause);
+          if (!usableExam) setActiveTab("practice");
+        } else {
+          setPracticeResumeActive(false);
+          setPracticePhase("lesson");
+          setLessonStep("overview");
+          setPracticeAnswer(null);
+          setPracticeFeedback(null);
+          setPracticeErrorCause(null);
+          setPracticeReviewCause(null);
+        }
+      });
+    };
+    window.addEventListener("storage", syncFromAnotherTab);
+    return () => window.removeEventListener("storage", syncFromAnotherTab);
+  }, [hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
     const practice = practiceResumeActive
-      ? { active: true, conceptId: selectedConceptId, problemId: practiceProblemId, phase: practicePhase, answer: practiceAnswer, feedback: practiceFeedback, errorCause: practiceErrorCause, reviewCause: practiceReviewCause }
+      ? { active: true, conceptId: selectedConceptId, problemId: practiceProblemId, phase: practicePhase, lessonStep, answer: practiceAnswer, feedback: practiceFeedback, errorCause: practiceErrorCause, reviewCause: practiceReviewCause }
       : undefined;
-    void saveProgress({ mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice, errorHistory });
-  }, [attempts, awaySeconds, errorHistory, guideSeen, hydrated, mastery, practiceAnswer, practiceErrorCause, practiceFeedback, practicePhase, practiceProblemId, practiceResumeActive, practiceReviewCause, selectedConceptId, studyDates, studySeconds]);
+    void saveProgress({ mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice, errorHistory, examSession: examSession ?? undefined, examHistory });
+  }, [attempts, awaySeconds, errorHistory, examHistory, examSession, guideSeen, hydrated, lessonStep, mastery, practiceAnswer, practiceErrorCause, practiceFeedback, practicePhase, practiceProblemId, practiceResumeActive, practiceReviewCause, selectedConceptId, studyDates, studySeconds]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -502,29 +564,51 @@ export default function Home() {
   useEffect(() => {
     if (!focusRunning) return;
     const update = () => {
-      setStudySession((previous) => {
-        if (!previous) return previous;
-        const now = Date.now();
-        const next = document.hidden ? markPhoneAway(previous, now) : checkpointStudySession(previous, now);
-        studySessionRef.current = next;
-        setFocusSeconds(sessionElapsedSeconds(next, now));
-        return next;
-      });
+      const previous = studySessionRef.current;
+      if (!previous) return;
+      const now = Date.now();
+      const next = document.hidden ? markPhoneAway(previous, now) : checkpointStudySession(previous, now);
+      studySessionRef.current = next;
+      setStudySession(next);
+      const elapsed = sessionElapsedSeconds(next, now);
+      setFocusSeconds(Math.min(elapsed, focusTotalSeconds));
+      if (focusTotalSeconds > 0 && elapsed >= focusTotalSeconds && focusAutoStopRef.current === next.id) {
+        focusAutoStopRef.current = null;
+        completeFocusSessionRef.current(now);
+        setFocusRunning(false);
+        setFocusSeconds(0);
+        setFocusOpen(false);
+        removeStored(storageKeys.focus);
+      }
     };
     update();
     const timer = window.setInterval(update, 1000);
     return () => window.clearInterval(timer);
-  }, [focusRunning]);
+  }, [focusRunning, focusTotalSeconds]);
 
   useEffect(() => {
-    if (!hydrated) return;
-    if (mockActive || mockFinished || Object.keys(mockAnswers).length > 0) {
-      const session: MockSession = { active: mockActive, index: mockIndex, answers: mockAnswers, finished: mockFinished };
-      writeStored(storageKeys.mock, JSON.stringify(session));
-    } else {
-      removeStored(storageKeys.mock);
-    }
-  }, [hydrated, mockActive, mockAnswers, mockFinished, mockIndex]);
+    if (!hydrated || !examSession?.active) return;
+    const timer = window.setInterval(() => setExamNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [examSession?.active, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || !examSession?.active) return;
+    const delay = Math.max(0, Date.parse(examSession.deadlineAt) - examNow);
+    const timeout = window.setTimeout(() => {
+      const form = examFormById.get(examSession.formId);
+      if (!form || !isExamExpired(examSession, new Date())) return;
+      const submittedAt = new Date().toISOString();
+      const result = scoreExam(form, examSession.answers, examSession.selectedOptionalSectionIds, examSession.startedAt, submittedAt, true);
+      setExamHistory((previous) => previous.some((entry) => entry.formId === result.formId && entry.startedAt === result.startedAt)
+        ? previous
+        : [...previous, result].slice(-30));
+      setExamSession((previous) => previous?.active && previous.startedAt === examSession.startedAt
+        ? { ...previous, active: false, finished: true, submittedAt }
+        : previous);
+    }, delay);
+    return () => window.clearTimeout(timeout);
+  }, [examNow, examSession, hydrated]);
 
   useEffect(() => {
     if (!focusOpen && !setupOpen && !sessionSummary) return;
@@ -590,7 +674,8 @@ export default function Home() {
       .filter((concept) => {
         const dueAt = attempts[concept.id]?.dueAt;
         const due = Boolean(dueAt && Date.parse(dueAt) <= now);
-        return isUnlocked(concept) && (!isRouteComplete(concept) || due) && (hasPractice(concept.id) || Boolean(conceptGuides[concept.id]));
+        const waitingForDelayed = (mastery[concept.id] ?? 0) === 3 && Boolean(dueAt && Date.parse(dueAt) > now);
+        return isUnlocked(concept) && !waitingForDelayed && (!isRouteComplete(concept) || due) && (hasPractice(concept.id) || Boolean(conceptGuides[concept.id]));
       })
       .sort((a, b) => {
         const due = (concept: Concept) => {
@@ -606,7 +691,10 @@ export default function Home() {
   const selectedGuide: ConceptGuide | undefined = conceptGuides[selectedConcept.id];
   const selectedLesson: LessonModule | undefined = lessonByConcept.get(selectedConcept.id);
   const currentPractice = problemBank.find((problem) => problem.id === practiceProblemId) ?? problemBank[0];
-  const currentMock = mockProblems[mockIndex] ?? mockProblems[0];
+  const currentExamForm: ExamForm = examFormById.get(examSession?.formId ?? examFormId) ?? examForms[0];
+  const currentExamQuestions = examQuestions(currentExamForm, examSession?.selectedOptionalSectionIds ?? selectedOptionalSectionIds, examSession?.answers ?? {});
+  const currentExamIndex = Math.min(Math.max(0, examSession?.index ?? 0), Math.max(0, currentExamQuestions.length - 1));
+  const currentExamQuestion = currentExamQuestions[currentExamIndex];
 
   const totalAttempts = Object.values(attempts).reduce((sum, value) => sum + value.total, 0);
   const totalCorrect = Object.values(attempts).reduce((sum, value) => sum + value.correct, 0);
@@ -620,16 +708,15 @@ export default function Home() {
   const routeCompleteCount = commonTestConcepts.filter(isRouteComplete).length;
   const routeProgress = commonTestConcepts.length ? Math.round((routeCompleteCount / commonTestConcepts.length) * 100) : 0;
   const availableConceptCount = commonTestConcepts.filter((concept) => hasPractice(concept.id)).length;
-  const learnedCount = commonTestConcepts.filter((concept) => (mastery[concept.id] ?? 0) >= 3).length;
+  const learnedCount = commonTestConcepts.filter((concept) => (mastery[concept.id] ?? 0) >= 4).length;
   const selectedLevel = mastery[selectedConcept.id] ?? 0;
   const targetProblem = problemByConcept.get(nextConcept.id);
-  const mockScore = mockProblems.filter((problem) => mockAnswers[problem.id] === problem.answer).length;
   const streak = currentStreak(studyDates);
   const targetDue = Boolean(attempts[nextConcept.id]?.dueAt && Date.parse(attempts[nextConcept.id].dueAt as string) <= currentTime());
-  const weakestMockConceptId = (() => {
-    const weakest = mockProblems.find((problem) => mockAnswers[problem.id] !== problem.answer);
-    return weakest ? primaryConceptIdFor(weakest) : undefined;
-  })();
+  const examRemainingSeconds = examSession?.active ? Math.max(0, Math.ceil((Date.parse(examSession.deadlineAt) - examNow) / 1000)) : 0;
+  const latestExamResult = examSession?.finished && examSession.submittedAt
+    ? examHistory.find((result) => result.formId === examSession.formId && result.submittedAt === examSession.submittedAt) ?? examHistory.filter((result) => result.formId === examSession.formId).at(-1)
+    : undefined;
 
   const filteredConcepts = (() => {
     const query = mapSearch.trim().toLowerCase();
@@ -644,11 +731,15 @@ export default function Home() {
 
   function openPracticeFor(concept: Concept) {
     setSelectedConceptId(concept.id);
-    const problem = problemForConcept(concept.id, mastery[concept.id] ?? 0);
+    const level = mastery[concept.id] ?? 0;
+    const dueAt = attempts[concept.id]?.dueAt;
+    const delayedWaiting = level === 3 && Boolean(dueAt && Date.parse(dueAt) > currentTime());
+    const problem = problemForConcept(concept.id, delayedWaiting ? 2 : level, { firstByConcept: problemByConcept, problemsByConcept, stagedProblemsByConcept });
     if (!problem) return;
     setPracticeResumeActive(true);
     setPracticeProblemId(problem.id);
     setPracticePhase("lesson");
+    setLessonStep("overview");
     setPracticeAnswer(null);
     setPracticeFeedback(null);
     setPracticeErrorCause(null);
@@ -656,18 +747,29 @@ export default function Home() {
     setActiveTab("practice");
   }
 
+  function practiceConceptIdFor(problem: Problem) {
+    return conceptById.has(selectedConceptId) && problem.conceptIds.includes(selectedConceptId) ? selectedConceptId : primaryConceptIdFor(problem);
+  }
+
   function recordAttempt(problem: Problem, correct: boolean) {
-    const primaryConceptId = primaryConceptIdFor(problem);
-    if (!primaryConceptId || !conceptById.has(primaryConceptId)) return;
+    const observedConceptId = practiceConceptIdFor(problem);
+    if (!observedConceptId || !conceptById.has(observedConceptId)) return;
     const now = new Date().toISOString();
+    const currentLevel = mastery[observedConceptId] ?? 0;
+    const expectedStage = currentLevel === 0 ? "quick" : currentLevel === 1 ? "standard" : currentLevel === 2 ? "transfer" : currentLevel === 3 ? "delayed" : "complete";
+    const isDelayed = problem.id.endsWith("-delayed");
+    const dueAt = attempts[observedConceptId]?.dueAt;
+    const delayedEligible = !isDelayed || !dueAt || Date.parse(dueAt) <= Date.parse(now);
+    const stageMatches = (expectedStage === "delayed" ? isDelayed : expectedStage === problem.kind && !isDelayed) && delayedEligible;
     setAttempts((previous) => {
       const next = { ...previous };
-      const currentLevel = mastery[primaryConceptId] ?? 0;
-      const nextLevel = correct ? Math.min(4, currentLevel + 1) : currentLevel;
+      const advances = correct && currentLevel < 4 && stageMatches;
+      const nextLevel = advances ? currentLevel + 1 : currentLevel;
       const intervalDays = correct ? [0, 1, 3, 7, 21][nextLevel] ?? 21 : 0;
       const dueAt = new Date(currentTime() + intervalDays * 24 * 60 * 60 * 1000).toISOString();
-      const old = next[primaryConceptId] ?? { correct: 0, total: 0, lastAt: now };
-      next[primaryConceptId] = {
+      const old = next[observedConceptId] ?? { correct: 0, total: 0, lastAt: now };
+      const evidence = [...(old.evidence ?? []), { problemId: problem.id, kind: problem.kind, delayed: problem.id.endsWith("-delayed"), correct, answeredAt: now, source: "observed" as const }].slice(-60);
+      next[observedConceptId] = {
         correct: old.correct + (correct ? 1 : 0),
         total: old.total + 1,
         lastAt: now,
@@ -675,13 +777,15 @@ export default function Home() {
         streak: correct ? (old.streak ?? 0) + 1 : 0,
         lastErrorCause: correct ? old.lastErrorCause : undefined,
         retry: undefined,
+        evidence,
       };
       return next;
     });
-    if (correct) {
+    if (correct && currentLevel < 4 && stageMatches) {
       setMastery((previous) => {
         const next = { ...previous };
-        next[primaryConceptId] = Math.min(4, (next[primaryConceptId] ?? 0) + 1);
+        const level = next[observedConceptId] ?? 0;
+        if (level === currentLevel) next[observedConceptId] = Math.min(4, level + 1);
         return next;
       });
     }
@@ -704,7 +808,7 @@ export default function Home() {
 
   function selectErrorCause(cause: ErrorCause) {
     if (!practiceFeedback || practiceFeedback.correct) return;
-    const conceptId = primaryConceptIdFor(currentPractice);
+    const conceptId = practiceConceptIdFor(currentPractice);
     const scheduledAt = new Date(currentTime() + retryDelayHours(cause) * 60 * 60 * 1000).toISOString();
     setPracticeErrorCause(cause);
     setAttempts((previous) => {
@@ -724,14 +828,18 @@ export default function Home() {
 
   function retryFromError() {
     if (!practiceErrorCause) return;
-    const conceptId = primaryConceptIdFor(currentPractice);
-    const alternative = [...(problemsByConcept.get(conceptId) ?? [])]
-      .filter((problem) => problem.id !== currentPractice.id)
-      .sort((a, b) => problemKindOrder[a.kind] - problemKindOrder[b.kind] || a.id.localeCompare(b.id))[0] ?? currentPractice;
+    const conceptId = practiceConceptIdFor(currentPractice);
+    const repairKind: Problem["kind"] = practiceErrorCause === "concept_gap" ? "quick" : practiceErrorCause === "procedure" ? "standard" : practiceErrorCause === "misread" ? "transfer" : currentPractice.kind;
+    const staged = stagedProblemsByConcept.get(conceptId) ?? {};
+    const candidates = [...(staged[repairKind] ?? []), ...(staged.quick ?? []), ...(staged.standard ?? []), ...(staged.transfer ?? [])]
+      .filter((problem) => problem.id !== currentPractice.id && !problem.id.endsWith("-delayed"))
+      .filter((problem, index, all) => all.findIndex((candidate) => candidate.id === problem.id) === index);
+    const alternative = candidates[0] ?? currentPractice;
     setPracticeResumeActive(true);
     setSelectedConceptId(conceptId);
     setPracticeProblemId(alternative.id);
     setPracticePhase("lesson");
+    setLessonStep("overview");
     setPracticeAnswer(null);
     setPracticeFeedback(null);
     setPracticeReviewCause(practiceErrorCause);
@@ -740,25 +848,31 @@ export default function Home() {
 
   function nextPractice() {
     const now = currentTime();
-    const alternatives = problemBank.filter((problem) => {
-      if (problem.id === currentPractice.id) return false;
-      const concept = conceptById.get(primaryConceptIdFor(problem));
-      return Boolean(concept && isCommonTestConcept(concept) && isUnlocked(concept));
-    });
-    const dueRetry = alternatives.find((problem) => {
-      const retry = attempts[primaryConceptIdFor(problem)]?.retry;
-      return retry?.problemId === problem.id && Date.parse(retry.scheduledAt) <= now;
-    });
-    const next = dueRetry ?? alternatives.sort((a, b) => {
-      const aId = primaryConceptIdFor(a);
-      const bId = primaryConceptIdFor(b);
-      const aDue = aId && attempts[aId]?.dueAt && Date.parse(attempts[aId].dueAt as string) <= now ? 0 : 1;
-      const bDue = bId && attempts[bId]?.dueAt && Date.parse(attempts[bId].dueAt as string) <= now ? 0 : 1;
-      return aDue - bDue || (mastery[aId] ?? 0) - (mastery[bId] ?? 0);
-    })[0] ?? currentPractice;
+    const currentConcept = conceptById.get(selectedConceptId);
+    const candidates = concepts.filter((concept) => isCommonTestConcept(concept) && isUnlocked(concept) && hasPractice(concept.id));
+    const dueConcept = candidates.filter((concept) => {
+      const dueAt = attempts[concept.id]?.dueAt;
+      return Boolean(dueAt && Date.parse(dueAt) <= now);
+    }).sort((a, b) => (conceptOrder.get(a.id) ?? 9999) - (conceptOrder.get(b.id) ?? 9999))[0];
+    const currentLevel = currentConcept ? mastery[currentConcept.id] ?? 0 : 4;
+    const currentDue = Boolean(currentConcept && attempts[currentConcept.id]?.dueAt && Date.parse(attempts[currentConcept.id]?.dueAt as string) <= now);
+    const canContinueCurrent = currentConcept && (currentLevel < 3 || (currentLevel === 3 && currentDue));
+    const eligibleCandidates = candidates.filter((concept) => {
+      const level = mastery[concept.id] ?? 0;
+      const dueAt = attempts[concept.id]?.dueAt;
+      const due = Boolean(dueAt && Date.parse(dueAt) <= now);
+      return level < 3 || (level === 3 && due);
+    }).sort((a, b) => (conceptOrder.get(a.id) ?? 9999) - (conceptOrder.get(b.id) ?? 9999));
+    const nextConceptCandidate = canContinueCurrent
+      ? currentConcept
+      : dueConcept ?? eligibleCandidates[0] ?? currentConcept ?? candidates[0];
+    const delayed = Boolean(dueConcept && nextConceptCandidate?.id === dueConcept.id && (mastery[dueConcept.id] ?? 0) === 3);
+    const nextLevel = nextConceptCandidate ? mastery[nextConceptCandidate.id] ?? 0 : 0;
+    const next = (nextConceptCandidate && (delayed ? delayedProblemForConcept(nextConceptCandidate.id, { problemsByConcept, stagedProblemsByConcept }) : problemForConcept(nextConceptCandidate.id, nextLevel === 3 ? 2 : nextLevel, { firstByConcept: problemByConcept, problemsByConcept, stagedProblemsByConcept }))) ?? currentPractice;
     setPracticeProblemId(next.id);
     setPracticeResumeActive(true);
     setPracticePhase("lesson");
+    setLessonStep("overview");
     setPracticeAnswer(null);
     setPracticeFeedback(null);
     setPracticeErrorCause(null);
@@ -784,6 +898,7 @@ export default function Home() {
     setFocusTotalSeconds(seconds);
     setFocusSeconds(0);
     setFocusRunning(true);
+    focusAutoStopRef.current = session.id;
     studySessionRef.current = session;
     setStudySession(session);
     writeStored(storageKeys.studySession, JSON.stringify({
@@ -810,7 +925,12 @@ export default function Home() {
     recordStudyDay();
   }
 
+  useEffect(() => {
+    completeFocusSessionRef.current = completeFocusSession;
+  });
+
   function stopFocus() {
+    focusAutoStopRef.current = null;
     completeFocusSession(currentTime());
     setFocusRunning(false);
     setFocusSeconds(0);
@@ -825,6 +945,10 @@ export default function Home() {
   }
 
   function openTarget() {
+    if (practiceResumeActive && problemBank.some((problem) => problem.id === practiceProblemId)) {
+      setActiveTab("practice");
+      return;
+    }
     const problem = problemByConcept.get(nextConcept.id);
     if (problem) openPracticeFor(nextConcept);
     else {
@@ -896,39 +1020,82 @@ export default function Home() {
     else startNoise();
   }
 
-  function startMock() {
-    setMockAnswers({});
-    setMockIndex(0);
-    setMockFinished(false);
-    setMockActive(true);
-    setActiveTab("mock");
+  function chooseExamForm(formId: string) {
+    const form = examFormById.get(formId);
+    if (!form || examSession?.active) return;
+    setExamFormId(form.id);
+    if (form.paper === "math2bc") setSelectedOptionalSectionIds(form.optionalSectionIds.slice(0, 3));
+    else setSelectedOptionalSectionIds([]);
   }
 
-  function finishMock(answers: Record<string, number>) {
-    setMockAnswers(answers);
-    setMockFinished(true);
-    setMockActive(false);
-    // The scan is a measurement, not a mastery pass. Only ordinary practice
-    // updates the spaced-repetition state, so repeating the scan cannot inflate progress.
+  function toggleOptionalSection(sectionId: string) {
+    if (examSession?.active) return;
+    setSelectedOptionalSectionIds((previous) => {
+      if (previous.includes(sectionId)) return previous.filter((id) => id !== sectionId);
+      if (previous.length >= 3) return previous;
+      return [...previous, sectionId];
+    });
+  }
+
+  function startExam(formId = examFormId) {
+    const form = examFormById.get(formId);
+    if (!form) return;
+    const selected = form.paper === "math2bc" ? selectedOptionalSectionIds : [];
+    const session = createExamSession(form, new Date(), selected);
+    setExamFormId(form.id);
+    setExamSession(session);
+    setExamNow(Date.parse(session.startedAt));
+    setActiveTab("mock");
     recordStudyDay();
   }
 
-  function advanceMock() {
-    if (!currentMock || mockAnswers[currentMock.id] === undefined) return;
-    const answers = mockIndex === mockProblems.length - 1 ? mockAnswers : { ...mockAnswers };
-    if (mockIndex === mockProblems.length - 1) finishMock(answers);
-    else setMockIndex((index) => index + 1);
+  function updateExamAnswer(answer: number) {
+    if (!examSession?.active || !currentExamQuestion) return;
+    if (isExamExpired(examSession, new Date())) {
+      finishExam(true);
+      return;
+    }
+    setExamSession((previous) => {
+      if (!previous) return previous;
+      const answers = { ...previous.answers, [currentExamQuestion.id]: answer };
+      currentExamQuestions.forEach((question, index) => {
+        if (question.sectionId === currentExamQuestion.sectionId && index > currentExamIndex) delete answers[question.id];
+      });
+      return { ...previous, answers };
+    });
+  }
+
+  function moveExamQuestion(delta: number) {
+    if (!examSession?.active) return;
+    setExamSession((previous) => previous ? { ...previous, index: Math.min(currentExamQuestions.length - 1, Math.max(0, previous.index + delta)) } : previous);
+  }
+
+  function finishExam(timedOut = false) {
+    const session = examSession;
+    if (!session?.active) return;
+    const form = examFormById.get(session.formId);
+    if (!form) return;
+    const expired = isExamExpired(session, new Date());
+    const submittedAt = new Date().toISOString();
+    const result = scoreExam(form, session.answers, session.selectedOptionalSectionIds, session.startedAt, submittedAt, timedOut || expired);
+    setExamHistory((previous) => previous.some((entry) => entry.formId === result.formId && entry.startedAt === result.startedAt)
+      ? previous
+      : [...previous, result].slice(-30));
+    setExamSession((previous) => previous?.active && previous.startedAt === session.startedAt
+      ? { ...previous, active: false, finished: true, submittedAt }
+      : previous);
+    recordStudyDay();
   }
 
   function skipFoundation() {
-    const bridgeMastery = Object.fromEntries(concepts.filter((concept) => concept.course === "bridge").map((concept) => [concept.id, 3]));
-    const mergedMastery = { ...mastery, ...bridgeMastery };
-    const initialPractice: PracticeResumeState = { active: true, conceptId: "I-01", problemId: "Q-I01-01", phase: "lesson", answer: null, feedback: null, errorCause: null, reviewCause: null };
+    const mergedMastery = { ...mastery };
+    const initialPractice: PracticeResumeState = { active: true, conceptId: "I-01", problemId: "Q-I01-01", phase: "lesson", lessonStep: "overview", answer: null, feedback: null, errorCause: null, reviewCause: null };
     setMastery(mergedMastery);
     void saveProgress({ mastery: mergedMastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice: initialPractice, errorHistory });
     setSelectedConceptId("I-01");
     setPracticeProblemId("Q-I01-01");
     setPracticePhase("lesson");
+    setLessonStep("overview");
     setPracticeResumeActive(true);
     setPracticeAnswer(null);
     setPracticeFeedback(null);
@@ -945,6 +1112,7 @@ export default function Home() {
     setSelectedConceptId("F-01");
     setPracticeProblemId("Q-F01-01");
     setPracticePhase("lesson");
+    setLessonStep("overview");
     setPracticeResumeActive(true);
     setPracticeAnswer(null);
     setPracticeFeedback(null);
@@ -954,7 +1122,7 @@ export default function Home() {
   }
 
   function exportData() {
-    const payload = { exportedAt: new Date().toISOString(), mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice: currentPracticeResume(), errorHistory, curriculum: "high_school_math_concepts.v1" };
+    const payload = { exportedAt: new Date().toISOString(), mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice: currentPracticeResume(), errorHistory, examSession, examHistory, curriculum: "high_school_math_concepts.v1" };
     const fileName = "kyote-math-60-progress.json";
     const content = JSON.stringify(payload, null, 2);
     const file = new File([content], fileName, { type: "application/json" });
@@ -996,12 +1164,21 @@ export default function Home() {
       setAwaySeconds(imported.awaySeconds);
       setGuideSeen(imported.guideSeen);
       setErrorHistory(normalizeErrorHistoryForContent(imported.errorHistory));
+      const importedExam = normalizeExamSession(imported.examSession);
+      const usableExam = importedExam && examFormById.has(importedExam.formId) ? importedExam : null;
+      setExamSession(usableExam);
+      setExamHistory(normalizeExamHistory(imported.examHistory).filter((result) => examFormById.has(result.formId)));
+      if (usableExam) {
+        setExamFormId(usableExam.formId);
+        setSelectedOptionalSectionIds(usableExam.selectedOptionalSectionIds);
+      }
       const importedPractice = normalizePracticeForContent(imported.practice);
       if (importedPractice?.active) {
         setPracticeResumeActive(true);
         setSelectedConceptId(importedPractice.conceptId);
         setPracticeProblemId(importedPractice.problemId);
         setPracticePhase(importedPractice.phase);
+        setLessonStep(importedPractice.lessonStep);
         setPracticeAnswer(importedPractice.answer);
         setPracticeFeedback(importedPractice.feedback);
         setPracticeErrorCause(importedPractice.errorCause);
@@ -1010,6 +1187,7 @@ export default function Home() {
       } else {
         setPracticeResumeActive(false);
         setPracticePhase("lesson");
+        setLessonStep("overview");
         setPracticeProblemId("");
         setPracticeAnswer(null);
         setPracticeFeedback(null);
@@ -1028,6 +1206,7 @@ export default function Home() {
   function resetData() {
     if (!window.confirm("学習記録をすべて消去します。元に戻せません。")) return;
     void clearProgress();
+    removeStored("kyote-math-60:mock");
     removeStored(storageKeys.initialized);
     removeStored(storageKeys.focus);
     removeStored(storageKeys.studySession);
@@ -1049,14 +1228,14 @@ export default function Home() {
     setStudySession(null);
     setFocusRunning(false);
     setFocusSeconds(0);
-    setMockActive(false);
-    setMockIndex(0);
-    setMockAnswers({});
-    setMockFinished(false);
+    setExamSession(null);
+    setExamHistory([]);
+    setExamFormId("IA-F1");
+    setSelectedOptionalSectionIds(["IIBC-02", "IIBC-03", "IIBC-04"]);
     setPracticePhase("lesson");
+    setLessonStep("overview");
     setExpandedConceptId(null);
     stopNoise();
-    removeStored(storageKeys.mock);
     setSetupOpen(true);
     setActiveTab("today");
   }
@@ -1071,7 +1250,7 @@ export default function Home() {
             <h2>{routeProgress >= 100 ? "共テルート100%。定着へ。" : "今日は、次の1概念だけ。"}</h2>
             <p className="hero-description">{routeProgress >= 100 ? "一度通った道は消えません。復習とミニ模試で、解ける状態を保とう。" : "0→100%の順路から、いまの次の1概念だけを表示。間違えても、触れた証拠は残ります。"}</p>
             <div className="hero-actions">
-              <button className="button button-primary" type="button" onClick={openTarget}>{targetProblem ? "次の1概念を始める" : "解説から進む"} <span>→</span></button>
+              <button className="button button-primary" type="button" onClick={openTarget}>{practiceResumeActive ? "続きから再開" : targetProblem ? "次の1概念を始める" : "解説から進む"} <span>→</span></button>
               <button className="button button-ghost" onClick={() => setFocusOpen(true)}>集中タイマー</button>
             </div>
           </div>
@@ -1096,7 +1275,7 @@ export default function Home() {
         <section className="metric-grid">
           <article className="metric-card"><span className="metric-label">共テルート</span><strong>{routeProgress}<small>%</small></strong><div className="mini-bar" role="progressbar" aria-label="共テ学習ルート" aria-valuemin={0} aria-valuemax={100} aria-valuenow={routeProgress}><i style={{ width: `${routeProgress}%` }} /></div><p>{routeTouchedCount} / {commonTestConcepts.length}概念に触れた</p></article>
           <article className="metric-card"><span className="metric-label">学習貯金</span><strong>{formatStudyAmount(liveStudySeconds)}<small> / 700h</small></strong><div className="mini-bar" role="progressbar" aria-label="700時間トラック" aria-valuemin={0} aria-valuemax={100} aria-valuenow={studyProgress.percent}><i style={{ width: `${Math.min(100, studyProgress.percent)}%` }} /></div><p>{liveAwaySeconds ? `${formatTime(liveAwaySeconds)} はスマホを置いた` : "タイマーで証拠を残そう"}</p></article>
-          <article className="metric-card"><span className="metric-label">標準到達</span><strong>{learnedCount}<small> / {commonTestConcepts.length}</small></strong><div className="mini-bar" role="progressbar" aria-label="標準到達" aria-valuemin={0} aria-valuemax={100} aria-valuenow={(learnedCount / commonTestConcepts.length) * 100}><i style={{ width: `${(learnedCount / commonTestConcepts.length) * 100}%` }} /></div><p>{availableConceptCount}概念に演習あり</p></article>
+          <article className="metric-card"><span className="metric-label">習得確認</span><strong>{learnedCount}<small> / {commonTestConcepts.length}</small></strong><div className="mini-bar" role="progressbar" aria-label="遅延再テストまでの習得確認" aria-valuemin={0} aria-valuemax={100} aria-valuenow={(learnedCount / commonTestConcepts.length) * 100}><i style={{ width: `${(learnedCount / commonTestConcepts.length) * 100}%` }} /></div><p>{availableConceptCount}概念に演習あり</p></article>
           <article className="metric-card"><span className="metric-label">累計の証拠</span><strong>{totalAttempts}<small>問</small></strong><div className="streak-dots">{[0, 1, 2, 3, 4, 5, 6].map((day) => <i className={day < streak ? "active" : ""} key={day} />)}</div><p>{totalAttempts ? `${totalCorrect}問正解・${studyDates.length}日記録` : "最初の1問で記録"}</p></article>
         </section>
 
@@ -1106,7 +1285,7 @@ export default function Home() {
           <div className="study-progress-foot"><span>{formatStudyAmount(liveStudySeconds)} / 700時間</span><span>{milestoneRemainingSeconds ? `次の節目まで ${formatTime(milestoneRemainingSeconds)}` : "700時間の節目を達成"}</span></div>
         </section>
 
-        <section className="focus-strip panel-card"><div><p className="eyebrow accent">{focusRunning ? "LEARNING NOW" : "FOCUS MODE"}</p><h3>{focusRunning ? `計測中 ${formatTime(focusSeconds)}` : "短く集中して、記録を残す"}</h3><p>{focusRunning ? "画面を閉じても復帰できます。STOPしたときだけ、学習の証拠を確定します。" : "時間を決めなくてもSTART。戻ってきたら、学習時間とスマホを置いた時間が残ります。"}</p></div><button className="button button-secondary" onClick={() => setFocusOpen(true)}>{focusRunning ? "タイマーを見る" : "START"} <span>↗</span></button></section>
+        <section className="focus-strip panel-card"><div><p className="eyebrow accent">{focusRunning ? "LEARNING NOW" : "FOCUS MODE"}</p><h3>{focusRunning ? `計測中 ${formatTime(focusSeconds)}` : "短く集中して、記録を残す"}</h3><p>{focusRunning ? "画面を閉じても復帰できます。選んだ時間で自動終了し、途中でSTOPもできます。" : "3・10・20分から選んでSTART。時間が来ると自動終了し、学習時間とスマホを置いた時間が残ります。"}</p></div><button className="button button-secondary" onClick={() => setFocusOpen(true)}>{focusRunning ? "タイマーを見る" : "START"} <span>↗</span></button></section>
       </div>
     );
   }
@@ -1114,7 +1293,7 @@ export default function Home() {
   function renderMap() {
     return (
       <div className="page-stack">
-        <div className="page-heading"><div><p className="eyebrow accent">CONCEPT MAP</p><h2>320概念の依存グラフ</h2><p>共テ対象225概念のルートは0→100%。1概念ずつ、戻らない。</p></div><div className="map-count"><strong>{routeProgress}%</strong><span>{routeTouchedCount} / {commonTestConcepts.length}概念に触れた</span></div></div>
+        <div className="page-heading"><div><p className="eyebrow accent">CONCEPT MAP</p><h2>320概念の依存グラフ</h2><p>橋渡しから数学IIIまで320概念を前提順に進む。1概念ずつ、戻らない。</p></div><div className="map-count"><strong>{routeProgress}%</strong><span>{routeTouchedCount} / {commonTestConcepts.length}概念に触れた</span></div></div>
         <section className="map-toolbar panel-card"><label className="search-box"><span aria-hidden="true">⌕</span><input aria-label="概念名・ID・タグで検索" value={mapSearch} onChange={(event) => setMapSearch(event.target.value)} placeholder="概念名・ID・タグで検索" /></label><div className="filter-row">{(["all", "bridge", "I", "A", "II", "B", "C", "III"] as CourseFilter[]).map((course) => <button key={course} className={`filter-chip ${mapCourse === course ? "selected" : ""}`} aria-pressed={mapCourse === course} onClick={() => setMapCourse(course)}>{course === "all" ? "すべて" : courseLabels[course]}</button>)}</div></section>
         <section className="concept-list">
           {filteredConcepts.map((concept) => {
@@ -1127,7 +1306,7 @@ export default function Home() {
             return (
               <div className={`concept-item ${expanded ? "expanded" : ""} ${!unlocked ? "locked" : ""}`} key={concept.id}>
                 <button className="concept-row-main" type="button" aria-expanded={expanded} onClick={() => { setSelectedConceptId(concept.id); setExpandedConceptId(expanded ? null : concept.id); }}>
-                  <span className="concept-id">{concept.id}</span><span className="concept-name">{concept.title}</span><span className="concept-course">{courseLabels[concept.course]}</span><span className="mastery-dots" aria-label={`レベル${level}`}>{[0, 1, 2, 3].map((dot) => <i className={dot < level ? "filled" : ""} key={dot} />)}</span><span className={`state-label ${unlocked ? "ready" : "locked-label"}`}>{unlocked ? levelLabel(level) : "前提待ち"}</span><span className="chevron">{expanded ? "−" : "+"}</span>
+                  <span className="concept-id">{concept.id}</span><span className="concept-name">{concept.title}</span><span className="concept-course">{courseLabels[concept.course]}</span><span className="mastery-dots" aria-label={`レベル${level} / 4`}>{[0, 1, 2, 3].map((dot) => <i className={dot < level ? "filled" : ""} key={dot} />)}</span><span className={`state-label ${unlocked ? "ready" : "locked-label"}`}>{unlocked ? levelLabel(level) : "前提待ち"}</span><span className="chevron">{expanded ? "−" : "+"}</span>
                 </button>
                 {expanded && <div className="concept-detail"><div><p>{concept.target}</p>{guide && <div className="concept-guide"><p><strong>意味</strong>{guide.definition}</p><p><strong>一手</strong>{guide.firstMove}</p><p><strong>罠</strong>{guide.trap}</p></div>}<div className="tag-row">{concept.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div>{concept.requires.length > 0 && <small>前提：{concept.requires.map((id) => conceptById.get(id)?.title ?? id).join(" / ")}</small>}<small>この概念の問題：{problemCount}問</small></div><div className="concept-detail-actions">{guide && <button className="button button-ghost button-small" type="button" onClick={() => markGuideRead(concept)}>{guideSeen[concept.id] ? "ガイド済み" : "解説を読んだ"}</button>}<button className="button button-small" type="button" disabled={!unlocked || !available} onClick={() => openPracticeFor(concept)}>{!unlocked ? "前提を先に" : available ? "この概念を練習" : "問題準備中"} <span>→</span></button></div></div>}
               </div>
@@ -1210,71 +1389,72 @@ export default function Home() {
           <div className="lesson-time"><strong>{currentPractice.estimatedSeconds < 60 ? "3" : "5"}</strong><span>分で読む</span></div>
         </section>
         {reviewOption && <section className="review-route panel-card"><p className="eyebrow accent">CAUSE-SPECIFIC REVIEW</p><h3>{reviewOption.label}を1問だけやり直す</h3><p>{reviewOption.description}。前回の問題とは別の表現で、同じ概念をもう一度確認します。</p></section>}
-        {guide ? (
-          <section className="lesson-grid">
-            <article className="lesson-block panel-card"><span className="lesson-number">01</span><p className="eyebrow accent">CORE IDEA</p><h3>これは何？</h3><p>{guide.definition}</p></article>
-            <article className="lesson-block panel-card"><span className="lesson-number">02</span><p className="eyebrow accent">FIRST MOVE</p><h3>問題を見たら最初にすること</h3><p>{guide.firstMove}</p></article>
-            <article className="lesson-block panel-card warning"><span className="lesson-number">03</span><p className="eyebrow">COMMON TRAP</p><h3>ここで失点しやすい</h3><p>{guide.trap}</p></article>
-          </section>
-        ) : (
-          <section className="lesson-block panel-card"><p className="eyebrow accent">CONCEPT TARGET</p><h3>この概念でできるようになること</h3><p>{selectedConcept.target}</p></section>
-        )}
-        {lesson && <>
-          <section className="lesson-detail-grid">
-            <article className="lesson-detail panel-card">
-              <p className="eyebrow accent">LESSON GOAL</p>
-              <h3>今日できるようになること</h3>
-              <p className="lesson-prose">{lesson.goal}</p>
-              <div className="lesson-why"><strong>なぜ必要？</strong><p>{lesson.whyItMatters}</p></div>
-            </article>
-            <article className="lesson-detail panel-card">
-              <p className="eyebrow accent">HOW TO THINK</p>
-              <h3>公式を使う前の考え方</h3>
-              <p className="lesson-prose">{lesson.explanation}</p>
-            </article>
-          </section>
-          <section className="lesson-example panel-card">
-            <div className="lesson-section-heading"><div><p className="eyebrow accent">WORKED EXAMPLE</p><h3>途中式を見ながら解く</h3></div><span>例題</span></div>
-            <p className="lesson-problem">{lesson.workedExample.problem}</p>
-            <ol className="lesson-steps">{lesson.workedExample.steps.map((step, index) => <li key={`${lesson.id}-step-${index}`}><span>{index + 1}</span><p>{step}</p></li>)}</ol>
-            <div className="lesson-answer"><strong>答え</strong><span>{lesson.workedExample.answer}</span></div>
-          </section>
-          <section className="lesson-detail-grid">
-            <article className="lesson-detail panel-card warning">
-              <p className="eyebrow">COMMON MISTAKES</p>
-              <h3>よくある失敗</h3>
-              <ul className="lesson-list">{lesson.commonMistakes.map((mistake) => <li key={mistake}>{mistake}</li>)}</ul>
-            </article>
-            <article className="lesson-detail panel-card lesson-check">
-              <p className="eyebrow accent">QUICK CHECK</p>
-              <h3>数字を変えた確認問題</h3>
-              <p className="lesson-problem">{lesson.quickCheck.problem}</p>
-              <details>
-                <summary>答えと理由を見る</summary>
-                <p><strong>答え：</strong>{lesson.quickCheck.answer}</p>
-                <p>{lesson.quickCheck.explanation}</p>
-              </details>
-            </article>
-          </section>
-          <section className="lesson-signal panel-card"><p className="eyebrow accent">EXAM SIGNAL</p><h3>共テでこの型を見抜くサイン</h3><p>{lesson.examSignal}</p></section>
+        {lessonStep === "overview" ? <>
+          {guide ? (
+            <section className="lesson-grid">
+              <article className="lesson-block panel-card"><span className="lesson-number">01</span><p className="eyebrow accent">CORE IDEA</p><h3>これは何？</h3><p>{guide.definition}</p></article>
+              <article className="lesson-block panel-card"><span className="lesson-number">02</span><p className="eyebrow accent">FIRST MOVE</p><h3>問題を見たら最初にすること</h3><p>{guide.firstMove}</p></article>
+              <article className="lesson-block panel-card warning"><span className="lesson-number">03</span><p className="eyebrow">COMMON TRAP</p><h3>ここで失点しやすい</h3><p>{guide.trap}</p></article>
+            </section>
+          ) : (
+            <section className="lesson-block panel-card"><p className="eyebrow accent">CONCEPT TARGET</p><h3>この概念でできるようになること</h3><p>{selectedConcept.target}</p></section>
+          )}
+          {lesson && <section className="lesson-detail-grid">
+            <article className="lesson-detail panel-card"><p className="eyebrow accent">LESSON GOAL</p><h3>今日できるようになること</h3><p className="lesson-prose">{lesson.goal}</p><div className="lesson-why"><strong>なぜ必要？</strong><p>{lesson.whyItMatters}</p></div></article>
+            <article className="lesson-detail panel-card"><p className="eyebrow accent">HOW TO THINK</p><h3>公式を使う前の考え方</h3><p className="lesson-prose">{lesson.explanation}</p></article>
+          </section>}
+          <section className="lesson-next panel-card"><div><p className="eyebrow accent">STEP 1 / 2</p><h3>意味がつながったら、例題へ</h3><p>ここまでの内容を保存しました。次に開いたときもこの位置から続けられます。</p></div><button className="button button-primary" type="button" onClick={() => setLessonStep("worked")}>例題を見る <span>→</span></button></section>
+        </> : <>
+          {lesson && <>
+            <section className="lesson-example panel-card"><div className="lesson-section-heading"><div><p className="eyebrow accent">WORKED EXAMPLE</p><h3>途中式を見ながら解く</h3></div><span>例題</span></div><p className="lesson-problem">{lesson.workedExample.problem}</p><ol className="lesson-steps">{lesson.workedExample.steps.map((step, index) => <li key={`${lesson.id}-step-${index}`}><span>{index + 1}</span><p>{step}</p></li>)}</ol><div className="lesson-answer"><strong>答え</strong><span>{lesson.workedExample.answer}</span></div></section>
+            <section className="lesson-detail-grid"><article className="lesson-detail panel-card warning"><p className="eyebrow">COMMON MISTAKES</p><h3>よくある失敗</h3><ul className="lesson-list">{lesson.commonMistakes.map((mistake) => <li key={mistake}>{mistake}</li>)}</ul></article><article className="lesson-detail panel-card"><p className="eyebrow accent">EXAM SIGNAL</p><h3>共テでこの型を見抜くサイン</h3><p className="lesson-prose">{lesson.examSignal}</p></article></section>
+          </>}
+          <section className="lesson-next panel-card"><div><p className="eyebrow accent">STEP 2 / 2</p><h3>例題を見たら、確認問題へ</h3><p>答えを記録すると、quick・standard・transferのどの段階を通ったかが残ります。</p></div><button className="button button-primary" type="button" onClick={() => { markGuideRead(selectedConcept); setPracticePhase("question"); }}>確認問題を解く <span>→</span></button></section>
         </>}
         <section className="lesson-bridge panel-card">
           <div><p className="eyebrow">WHY THIS COMES NOW</p><h3>{prerequisiteNames.length > 0 ? "前提からつながっている" : "ここが出発点"}</h3><p>{prerequisiteNames.length > 0 ? `前提は ${prerequisiteNames.join(" / ")}。この概念は、それらを使って共テの問題文を式へ変換するための部品です。` : "ここで使う言葉と操作を先に固定してから、次の問題へ進みます。"}</p></div>
           <div className="lesson-rule"><strong>読む順番</strong><span>{lesson ? "目標 → 考え方 → 例題 → ミス → 確認問題" : "意味 → 最初の一手 → 罠 → 1問"}</span></div>
-        </section>
-        <section className="lesson-next panel-card">
-          <div><p className="eyebrow accent">NEXT</p><h3>読めたら、確認問題へ</h3><p>正解することより、解説の「最初の一手」を自分の言葉で再現できるかを確認する。</p></div>
-          <button className="button button-primary" type="button" onClick={() => { markGuideRead(selectedConcept); setPracticePhase("question"); }}>確認問題を解く <span>→</span></button>
         </section>
       </div>
     );
   }
 
   function renderMock() {
-    if (mockFinished) return <div className="page-stack"><div className="page-heading"><div><p className="eyebrow accent">MINI MOCK</p><h2>結果を次の学習へつなぐ</h2><p>これは8問の技能スキャン。共テ本番の点数には換算しない。</p></div></div><section className="result-card panel-card"><div className="result-score"><strong>{mockScore}</strong><span>/ {mockProblems.length}問</span><small>I・A 4問 / II・B・C 4問</small></div><div className="result-message"><p className="eyebrow">YOUR READOUT</p><h3>{mockScore >= 5 ? "幹線がつながってきた" : "まずは取り切れる概念から"}</h3><p>{mockScore} / {mockProblems.length}問正解。{weakestMockConceptId ? "最初の弱点を1つだけ確認し、次の10分に変換しよう。" : "今日の幹線は一通り確認できた。"}</p><button className="button button-primary" type="button" onClick={() => { setMockFinished(false); if (weakestMockConceptId) { setSelectedConceptId(weakestMockConceptId); setMapSearch(weakestMockConceptId); } setActiveTab("map"); }}>{weakestMockConceptId ? "最初の弱点を見る" : "マップへ戻る"} <span>→</span></button></div></section><button className="button button-ghost" type="button" onClick={startMock}>もう一度ミニ模試</button></div>;
-    if (!mockActive) return <div className="page-stack"><div className="page-heading"><div><p className="eyebrow accent">MINI MOCK</p><h2>本番前の8問スキャン</h2><p>数学I・A・II・B・Cの幹線から、いまの取りこぼしを確認する。</p></div></div><section className="mock-intro panel-card"><div className="mock-number">08</div><div><p className="eyebrow">SHORT SESSION</p><h3>12分で、現在地を測る</h3><p>オリジナル問題8問。I・Aから4問、II・B・Cから4問。結果は学習用のスキャンとして扱う。</p><button className="button button-primary" type="button" onClick={startMock}>模試を始める <span>→</span></button></div></section><div className="mock-rules"><span>01　順番に進む</span><span>02　最後に一括採点</span><span>03　概念別に記録</span></div></div>;
-    const currentAnswer = mockAnswers[currentMock.id];
-    return <div className="page-stack"><div className="mock-progress"><span>MINI MOCK</span><strong>{String(mockIndex + 1).padStart(2, "0")} <small>/ {String(mockProblems.length).padStart(2, "0")}</small></strong><span>採点は最後</span></div><section className="question-card mock-question panel-card"><div className="question-top"><span>{currentMock.id}</span><span>{courseLabels[conceptById.get(currentMock.conceptIds[0])?.course ?? "I"]}</span></div><h3>{currentMock.title}</h3><p className="question-prompt">{currentMock.prompt}</p><div className="option-list">{currentMock.options.map((option, index) => <button className={`option-button ${currentAnswer === index ? "chosen" : ""}`} type="button" aria-pressed={currentAnswer === index} key={option} onClick={() => setMockAnswers((previous) => ({ ...previous, [currentMock.id]: index }))}><span className="option-key">{String.fromCharCode(65 + index)}</span><span>{option}</span></button>)}</div><div className="question-actions"><button className="button button-primary" type="button" disabled={currentAnswer === undefined} onClick={advanceMock}>{mockIndex === mockProblems.length - 1 ? "採点する" : "次の問題へ"} <span>→</span></button><span className="selected-note">解答済み {Object.keys(mockAnswers).length} / {mockProblems.length}</span></div></section></div>;
+    if (!examSession) {
+      const selectedForm = examFormById.get(examFormId) ?? examForms[0];
+      const isIibc = selectedForm.paper === "math2bc";
+      const isMath3 = selectedForm.paper === "math3";
+      const durationMinutes = Math.round(selectedForm.durationSeconds / 60);
+      const paperLabel = selectedForm.paper === "math1a" ? "数学I・数学A" : selectedForm.paper === "math2bc" ? "数学II・数学B・数学C" : "数学III";
+      return <div className="page-stack">
+        <div className="page-heading"><div><p className="eyebrow accent">{isMath3 ? "MATH III INTEGRATION" : "FULL EXAM MODE"}</p><h2>{isMath3 ? "数学IIIを横断して測る" : "本番と同じ時間で測る"}</h2><p>オリジナルの連続誘導フォーム。解説は提出後だけに表示し、練習の正答率とは別に記録します。</p></div><span className="mode-badge">{durationMinutes}分 / 100点</span></div>
+        <section className="mock-intro panel-card"><div className="mock-number">{durationMinutes}</div><div><p className="eyebrow">{isMath3 ? "INTEGRATED MATH III TRACK" : "OFFICIAL FORMAT TARGET"}</p><h3>{paperLabel}</h3><p>制限時間{durationMinutes}分、満点100点。未解答は0点として記録し、時間切れならその時点で自動提出します。</p><div className="exam-form-grid">{examForms.filter((form) => form.paper === selectedForm.paper).map((form) => <button className={`button ${examFormId === form.id ? "button-primary" : "button-ghost"}`} type="button" key={form.id} onClick={() => chooseExamForm(form.id)}>{form.title}</button>)}</div></div></section>
+        {isIibc && <section className="exam-section-picker panel-card"><p className="eyebrow accent">SELECT 3 OF 4</p><h3>選択分野を3つ固定する</h3><p>開始後は変更できません。選んだ3分野だけが100点に含まれます。</p><div className="exam-option-grid">{selectedForm.optionalSectionIds.map((sectionId) => { const section = selectedForm.sections.find((candidate) => candidate.id === sectionId); const selected = selectedOptionalSectionIds.includes(sectionId); return <button className={`exam-option ${selected ? "selected" : ""}`} type="button" aria-pressed={selected} key={sectionId} onClick={() => toggleOptionalSection(sectionId)}><strong>{section?.title ?? sectionId}</strong><span>{selected ? "選択中" : "未選択"}</span></button>; })}</div><small>現在 {selectedOptionalSectionIds.length} / 3 分野</small></section>}
+        <section className="mock-rules panel-card"><span>01　{durationMinutes}分を厳守</span><span>02　途中保存・再開</span><span>03　提出後に採点</span></section>
+        <button className="button button-primary wide" type="button" disabled={isIibc && selectedOptionalSectionIds.length !== 3} onClick={() => startExam(selectedForm.id)}>このフォームを開始 <span>→</span></button>
+        {examHistory.length > 0 && <section className="exam-history panel-card"><p className="eyebrow">RECORDED RESULTS</p><h3>過去の提出</h3>{examHistory.slice().reverse().slice(0, 6).map((result) => <div className="exam-history-row" key={`${result.formId}-${result.submittedAt}`}><span>{result.formId}</span><strong>{result.score} / {result.totalPoints}</strong><span>{result.timedOut ? "時間切れ" : "提出"} · {result.unanswered.length}問未解答</span></div>)}</section>}
+      </div>;
+    }
+
+    if (examSession.finished) {
+      const result = latestExamResult;
+      return <div className="page-stack">
+        <div className="page-heading"><div><p className="eyebrow accent">EXAM RESULT</p><h2>提出結果を確認する</h2><p>{currentExamForm.title}。この結果だけで合否や学習到達を断定せず、複数フォームの記録で振り返ります。</p></div><span className="mode-badge">{result?.timedOut ? "TIME OUT" : "SUBMITTED"}</span></div>
+        {result ? <section className="result-card panel-card"><div className="result-score"><strong>{result.score}</strong><span>/ {result.totalPoints}点</span><small>{result.percentage}% · {formatTime(result.elapsedSeconds)} · 未解答 {result.unanswered.length}問</small></div><div className="result-message"><p className="eyebrow">POST-SUBMISSION REVIEW</p><h3>{result.percentage >= 60 ? "このフォームでは6割以上" : "次は失点の型を分解する"}</h3><p>{result.timedOut ? "時間切れ時点で提出しました。未解答を含め、時間配分も学習データとして残しています。" : "解説は提出後に初めて見られる設計です。セクションごとの点と未解答を次の復習に使います。"}</p><div className="exam-breakdown">{Object.entries(result.bySection).map(([sectionId, sectionResult]) => <span key={sectionId}>{sectionId} {sectionResult.score}/{sectionResult.points}（未解答{sectionResult.unanswered}）</span>)}</div><button className="button button-primary" type="button" onClick={() => { setExamSession(null); setActiveTab("mock"); }}>別フォームを選ぶ <span>→</span></button></div></section> : <section className="empty-state panel-card">この提出の採点履歴が見つかりません。別フォームを選んでください。</section>}
+        {result && <section className="exam-review panel-card"><p className="eyebrow accent">QUESTION REVIEW</p><h3>設問別レビュー</h3><p>正答だけでなく、問題文の条件と解説の最初の一手を確認します。提出前には表示されません。</p>{currentExamQuestions.map((question) => { const answer = examSession.answers[question.id]; const correct = answer === question.answer; return <article className={`exam-review-item ${correct ? "correct" : "incorrect"}`} key={question.id}><div className="question-top"><span>{question.id} · {question.points}点</span><strong>{answer === undefined ? "未解答" : correct ? "正解" : "不正解"}</strong></div><h4>{question.title}</h4><p className="question-prompt">{question.prompt}</p><p><strong>正答：</strong>{question.options[question.answer]}　<strong>あなたの解答：</strong>{answer === undefined ? "なし" : question.options[answer] ?? "不正な解答"}</p><p className="review-explanation"><strong>解説：</strong>{question.explanation}</p></article>; })}</section>}
+        {examHistory.length > 0 && <section className="exam-history panel-card"><p className="eyebrow">FORM HISTORY</p><h3>フォーム別の記録</h3>{examHistory.slice().reverse().map((entry) => <div className="exam-history-row" key={`${entry.formId}-${entry.submittedAt}`}><span>{entry.formId}</span><strong>{entry.score}/{entry.totalPoints}</strong><span>{entry.submittedAt.slice(0, 10)} · 未解答{entry.unanswered.length}</span></div>)}</section>}
+      </div>;
+    }
+
+    if (!currentExamQuestion) return <section className="empty-state panel-card">このフォームの問題を準備できませんでした。別フォームを選んでください。</section>;
+    const currentAnswer = examSession.answers[currentExamQuestion.id];
+    const currentIndex = Math.min(examSession.index, currentExamQuestions.length - 1);
+    return <div className="page-stack">
+      <div className="mock-progress"><span>{currentExamForm.title}</span><strong aria-live="polite" aria-atomic="true">残り {formatTime(examRemainingSeconds)}</strong><span>{currentIndex + 1} / {currentExamQuestions.length}問</span></div>
+      <section className="exam-context panel-card"><p className="eyebrow accent">{currentExamQuestion.sectionTitle}</p><h3>{currentExamQuestion.context}</h3>{currentExamQuestion.contextTable && <table><thead><tr>{currentExamQuestion.contextTable.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{currentExamQuestion.contextTable.rows.map((row, rowIndex) => <tr key={`${currentExamQuestion.id}-row-${rowIndex}`}>{row.map((cell, cellIndex) => <td key={`${currentExamQuestion.id}-cell-${cellIndex}`}>{cell}</td>)}</tr>)}</tbody></table>}<p className="exam-induction">{currentExamQuestion.induction}</p></section>
+      <section className="question-card mock-question panel-card"><div className="question-top"><span>{currentExamQuestion.id}</span><span>{currentExamQuestion.points}点</span></div><h3>{currentExamQuestion.title}</h3><p className="question-prompt">{currentExamQuestion.prompt}</p><div className="option-list">{currentExamQuestion.options.map((option, index) => <button className={`option-button ${currentAnswer === index ? "chosen" : ""}`} type="button" aria-pressed={currentAnswer === index} key={`${currentExamQuestion.id}-${index}`} onClick={() => updateExamAnswer(index)}><span className="option-key">{String.fromCharCode(65 + index)}</span><span>{option}</span></button>)}</div><div className="question-actions"><button className="button button-ghost" type="button" disabled={currentIndex === 0} onClick={() => moveExamQuestion(-1)}>← 前へ</button><button className="button button-primary" type="button" onClick={() => currentIndex === currentExamQuestions.length - 1 ? finishExam(false) : moveExamQuestion(1)}>{currentIndex === currentExamQuestions.length - 1 ? "提出する" : "次の問題へ"} <span>→</span></button><span className="selected-note">解答済み {Object.keys(examSession.answers).length} / {currentExamQuestions.length}</span></div></section>
+      <section className="exam-warning panel-card"><strong>提出前は解説を表示しません。</strong><span>途中で閉じても、このフォーム・選択・解答・現在位置は保存されます。未解答のまま進むこともできます。</span></section>
+    </div>;
   }
 
   function renderSettings() {
@@ -1307,10 +1487,10 @@ export default function Home() {
     <main className="app-shell">
       <header className="topbar"><div className="brand"><div className="brand-mark">Σ</div><div><p className="brand-kicker">COMMON TEST / MATH</p><h1>共テ数学60</h1></div></div><div className="topbar-right"><span className={`offline-pill ${isOnline ? "online" : "offline"}`}><i /><span className="online-label">{isOnline ? "オンライン / オフライン対応" : "オフライン中"}</span><span className="compact-label">{isOnline ? "利用可能" : "オフライン"}</span></span><button className="icon-button" type="button" aria-label="テーマ切替" onClick={() => setIsDark((value) => !value)}>{isDark ? "☼" : "◐"}</button></div></header>
       <div className="workspace"><nav className="sidebar" aria-label="メインナビゲーション">{tabItems.map((item) => <button className={`nav-item ${activeTab === item.id ? "active" : ""}`} type="button" aria-current={activeTab === item.id ? "page" : undefined} key={item.id} onClick={() => setActiveTab(item.id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span>{item.label}</span>{item.id === "practice" && totalAttempts > 0 && <i className="nav-dot" aria-hidden="true" />}</button>)}<div className="sidebar-bottom"><p>教材バンク</p><strong>{problemBank.length}</strong><span>{lessonModules.length}本編 / {Object.keys(conceptGuides).length}ガイド</span></div></nav><section className="main-content">{activeTab === "today" && renderToday()}{activeTab === "map" && renderMap()}{activeTab === "practice" && renderPractice()}{activeTab === "mock" && renderMock()}{activeTab === "settings" && renderSettings()}</section></div>
-      {focusRunning && <button className="focus-running" type="button" aria-label={`集中タイマー ${formatTime(focusSeconds)}。詳細を開く`} onClick={() => setFocusOpen(true)}><span className="pulse-dot" />FOCUS <strong>{formatTime(focusSeconds)}</strong></button>}
-      {focusOpen && <div className="modal-backdrop" role="presentation"><section ref={focusModalRef} className="focus-modal" role="dialog" aria-modal="true" aria-labelledby="focus-title" aria-describedby="focus-description"><button ref={modalCloseRef} className="modal-close" type="button" onClick={() => setFocusOpen(false)} aria-label="閉じる">×</button><p className="eyebrow accent">FOCUS MODE</p>{focusRunning ? <><h2 id="focus-title">計測中。画面は閉じてOK。</h2><p id="focus-description">STOPするまで自動終了しません。画面を離れた時間は別に記録します。</p><div className="focus-live"><strong>{formatTime(focusSeconds)}</strong><span>経過時間</span><small>{studySession ? `スマホを置いた時間 ${formatTime(sessionAwaySeconds(studySession, currentTime()))}` : ""}</small></div><div className="hero-actions"><button className="button button-secondary" type="button" onClick={() => setFocusOpen(false)}>戻る</button><button className="button button-danger" type="button" onClick={stopFocus}>STOPして記録</button></div></> : <><h2 id="focus-title">まずSTART。時間は自由。</h2><p id="focus-description">10・20・40分は目安です。選ばなくても始められ、STOPしたときだけ今日の証拠になります。</p><div className="duration-grid">{[10, 20, 40].map((minutes) => <button key={minutes} type="button" className={`duration-button ${focusTotalSeconds === minutes * 60 ? "selected" : ""}`} onClick={() => { setFocusTotalSeconds(minutes * 60); setFocusSeconds(0); }}><strong>{minutes}</strong><span>min 目安</span></button>)}</div><div className="focus-noise"><div><strong>ピンクノイズ</strong><span>{noiseOn ? "再生中" : "オフ"}</span></div><button className="toggle-button" type="button" aria-pressed={noiseOn} onClick={toggleNoise}><span className={noiseOn ? "toggle-knob on" : "toggle-knob"} /><span>{noiseOn ? "On" : "Off"}</span></button></div><button className="button button-primary wide" type="button" onClick={beginFocus}>STARTする <span>→</span></button></>}</section></div>}
+      {focusRunning && <button className="focus-running" type="button" aria-label={`集中タイマー ${formatTime(focusSeconds)}。詳細を開く`} onClick={() => setFocusOpen(true)}><span className="pulse-dot" />FOCUS <strong aria-live="polite" aria-atomic="true">{formatTime(focusSeconds)}</strong></button>}
+      {focusOpen && <div className="modal-backdrop" role="presentation"><section ref={focusModalRef} className="focus-modal" role="dialog" aria-modal="true" aria-labelledby="focus-title" aria-describedby="focus-description"><button ref={modalCloseRef} className="modal-close" type="button" onClick={() => setFocusOpen(false)} aria-label="閉じる">×</button><p className="eyebrow accent">FOCUS MODE</p>{focusRunning ? <><h2 id="focus-title">計測中。画面は閉じてOK。</h2><p id="focus-description">選んだ時間で自動終了します。途中でSTOPもでき、画面を離れた時間は別に記録します。</p><div className="focus-live"><strong aria-live="polite" aria-atomic="true">{formatTime(focusSeconds)}</strong><span>経過時間</span><small>{studySession ? `スマホを置いた時間 ${formatTime(sessionAwaySeconds(studySession, currentTime()))}` : ""}</small></div><div className="hero-actions"><button className="button button-secondary" type="button" onClick={() => setFocusOpen(false)}>戻る</button><button className="button button-danger" type="button" onClick={stopFocus}>STOPして記録</button></div></> : <><h2 id="focus-title">まずSTART。時間を選ぶ。</h2><p id="focus-description">3・10・20分から選べます。時間が来ると自動終了し、途中でSTOPしたときも今日の証拠になります。</p><div className="duration-grid">{[3, 10, 20].map((minutes) => <button key={minutes} type="button" className={`duration-button ${focusTotalSeconds === minutes * 60 ? "selected" : ""}`} onClick={() => { setFocusTotalSeconds(minutes * 60); setFocusSeconds(0); }}><strong>{minutes}</strong><span>min</span></button>)}</div><div className="focus-noise"><div><strong>ピンクノイズ</strong><span>{noiseOn ? "再生中" : "オフ"}</span></div><button className="toggle-button" type="button" aria-pressed={noiseOn} onClick={toggleNoise}><span className={noiseOn ? "toggle-knob on" : "toggle-knob"} /><span>{noiseOn ? "On" : "Off"}</span></button></div><button className="button button-primary wide" type="button" onClick={beginFocus}>STARTする <span>→</span></button></>}</section></div>}
       {sessionSummary && <div className="modal-backdrop" role="presentation"><section ref={summaryModalRef} className="summary-modal" role="dialog" aria-modal="true" aria-labelledby="summary-title" aria-describedby="summary-description"><button ref={summaryCloseRef} className="modal-close" type="button" onClick={() => setSessionSummary(null)} aria-label="閉じる">×</button><p className="eyebrow accent">SESSION COMPLETE</p><h2 id="summary-title">積み上げを記録した。</h2><p id="summary-description">今日は画面を見ていた時間ではなく、正味の集中時間だけを進捗に加えました。</p><div className="summary-numbers"><div><strong>{formatTime(sessionSummary.studySeconds)}</strong><span>正味集中</span></div><div><strong>{formatTime(sessionSummary.awaySeconds)}</strong><span>スマホを置いた時間</span></div></div>{sessionEvidence && <div className="session-evidence"><div><strong>{sessionEvidence.questions}</strong><span>解いた問題</span></div><div><strong>{Math.max(0, sessionEvidence.routeEnd - sessionEvidence.routeStart)}</strong><span>進んだ概念</span></div><div><strong>{sessionEvidence.routeStart} → {sessionEvidence.routeEnd}</strong><span>ルート</span></div></div>}<p className="summary-reassurance">進捗は戻りません。次は1問だけでOK。</p><button className="button button-primary wide" type="button" onClick={continueToNextPractice}>次の1問へ <span>→</span></button></section></div>}
-      {setupOpen && <div className="modal-backdrop" role="presentation"><section ref={setupModalRef} className="setup-modal" role="dialog" aria-modal="true" aria-labelledby="setup-title" aria-describedby="setup-description"><div className="setup-mark">Σ</div><p className="eyebrow accent">YOUR STARTING POINT</p><h2 id="setup-title">数学を、概念からつなぐ。</h2><p id="setup-description">320の概念を依存順に並べ、毎日の「次の一手」だけを出します。まずは今の状態に近い入口を選んでください。</p><div className="setup-actions"><button ref={setupPrimaryRef} className="setup-choice primary" type="button" onClick={skipFoundation}><span><strong>数学I「数と式」から始める</strong><small>橋渡しを確認済みとして、I-01から始める</small></span><b>→</b></button><button className="setup-choice" type="button" onClick={startDiagnostic}><span><strong>橋渡しから1問ずつ始める</strong><small>F-01から解き、回答に合わせて次の入口を選ぶ</small></span><b>→</b></button></div><small className="setup-note">あとから設定で記録を消去できます。</small></section></div>}
+      {setupOpen && <div className="modal-backdrop" role="presentation"><section ref={setupModalRef} className="setup-modal" role="dialog" aria-modal="true" aria-labelledby="setup-title" aria-describedby="setup-description"><div className="setup-mark">Σ</div><p className="eyebrow accent">YOUR STARTING POINT</p><h2 id="setup-title">数学を、概念からつなぐ。</h2><p id="setup-description">320の概念を依存順に並べ、毎日の「次の一手」だけを出します。まずは今の状態に近い入口を選んでください。</p><div className="setup-actions"><button ref={setupPrimaryRef} className="setup-choice primary" type="button" onClick={skipFoundation}><span><strong>数学I「数と式」から始める</strong><small>橋渡しを確認済みとして、I-01から始める</small></span><b>→</b></button><button className="setup-choice" type="button" onClick={startDiagnostic}><span><strong>橋渡しから1問ずつ始める</strong><small>F-01から順に解き、正答段階に合わせて同じ概念の問題を進める</small></span><b>→</b></button></div><small className="setup-note">あとから設定で記録を消去できます。</small></section></div>}
     </main>
   );
 }

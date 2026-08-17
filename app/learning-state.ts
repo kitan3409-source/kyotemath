@@ -8,6 +8,7 @@ export const ERROR_CAUSE_OPTIONS = [
 
 export type ErrorCause = (typeof ERROR_CAUSE_OPTIONS)[number]["id"];
 export type PracticePhase = "lesson" | "question";
+export type LessonStep = "overview" | "worked";
 
 export type PracticeFeedback = Readonly<{
   correct: boolean;
@@ -19,6 +20,7 @@ export type PracticeResumeState = Readonly<{
   conceptId: string;
   problemId: string;
   phase: PracticePhase;
+  lessonStep: LessonStep;
   answer: number | null;
   feedback: PracticeFeedback | null;
   errorCause: ErrorCause | null;
@@ -37,6 +39,15 @@ export type ErrorRecord = Readonly<{
   at: string;
 }>;
 
+export type AttemptEvidence = Readonly<{
+  problemId: string;
+  kind: "quick" | "standard" | "transfer";
+  delayed: boolean;
+  correct: boolean;
+  answeredAt: string;
+  source: "observed" | "imported";
+}>;
+
 export type ErrorHistory = Record<string, ErrorRecord[]>;
 
 const ERROR_CAUSES = new Set<ErrorCause>(ERROR_CAUSE_OPTIONS.map((option) => option.id));
@@ -53,8 +64,17 @@ export function isPracticePhase(value: unknown): value is PracticePhase {
   return value === "lesson" || value === "question";
 }
 
-function validIsoDate(value: unknown): value is string {
-  return typeof value === "string" && Number.isFinite(Date.parse(value));
+export function isLessonStep(value: unknown): value is LessonStep {
+  return value === "overview" || value === "worked";
+}
+
+export function isValidIsoDate(value: unknown): value is string {
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(value);
+  if (!match) return false;
+  const [, year, month, day] = match.map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
 function normalizeFeedback(value: unknown): PracticeFeedback | null {
@@ -69,6 +89,7 @@ function normalizeFeedback(value: unknown): PracticeFeedback | null {
 export function normalizePracticeSnapshot(value: unknown): PracticeResumeState | undefined {
   if (!isRecord(value) || typeof value.active !== "boolean" || typeof value.conceptId !== "string" || typeof value.problemId !== "string") return undefined;
   if (!isPracticePhase(value.phase)) return undefined;
+  const lessonStep = isLessonStep(value.lessonStep) ? value.lessonStep : "overview";
   const answer = value.answer === null
     ? null
     : typeof value.answer === "number" && Number.isSafeInteger(value.answer) && value.answer >= 0 && value.answer < 4
@@ -79,6 +100,7 @@ export function normalizePracticeSnapshot(value: unknown): PracticeResumeState |
     conceptId: value.conceptId,
     problemId: value.problemId,
     phase: value.phase,
+    lessonStep,
     answer,
     feedback: normalizeFeedback(value.feedback),
     errorCause: isErrorCause(value.errorCause) ? value.errorCause : null,
@@ -93,7 +115,7 @@ export function normalizeErrorHistory(value: unknown): ErrorHistory {
     if (!Array.isArray(rawEntries)) continue;
     const entries: ErrorRecord[] = [];
     for (const rawEntry of rawEntries) {
-      if (!isRecord(rawEntry) || typeof rawEntry.problemId !== "string" || !isErrorCause(rawEntry.cause) || !validIsoDate(rawEntry.at)) continue;
+      if (!isRecord(rawEntry) || typeof rawEntry.problemId !== "string" || !isErrorCause(rawEntry.cause) || !isValidIsoDate(rawEntry.at)) continue;
       entries.push({ problemId: rawEntry.problemId, cause: rawEntry.cause, at: rawEntry.at });
     }
     if (entries.length > 0) history[conceptId] = entries.slice(-20);
@@ -117,7 +139,7 @@ export function appendErrorRecord(history: ErrorHistory, conceptId: string, reco
 }
 
 export function isMasteryComplete(level: number | undefined): boolean {
-  return (level ?? 0) >= 3;
+  return (level ?? 0) >= 4;
 }
 
 export function retryDelayHours(cause: ErrorCause): number {

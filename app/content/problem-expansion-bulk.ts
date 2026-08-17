@@ -1,4 +1,4 @@
-import conceptData from "../../data/math-concepts.json";
+import conceptData from "../../data/math-concepts.json" with { type: "json" };
 import type { Problem } from "../problem-bank";
 
 /**

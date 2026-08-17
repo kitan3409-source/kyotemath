@@ -1,5 +1,7 @@
-const CACHE_NAME = "kyote-math-60-v4";
-const APP_SHELL = ["./", "./manifest.webmanifest", "./favicon.svg", "./apple-touch-icon.png", "./icon-192.png", "./icon-512.png"];
+const CACHE_NAME = "kyote-math-60-__CACHE_VERSION__";
+const GENERATED_STATIC_ASSETS = "__STATIC_ASSETS__";
+const STATIC_ASSETS = GENERATED_STATIC_ASSETS.startsWith("[") ? JSON.parse(GENERATED_STATIC_ASSETS) : [];
+const APP_SHELL = ["./", "./manifest.webmanifest", "./favicon.svg", "./apple-touch-icon.png", "./icon-192.png", "./icon-512.png", ...STATIC_ASSETS];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()));
@@ -18,7 +20,7 @@ self.addEventListener("fetch", (event) => {
       const copy = response.clone();
       event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)));
       return response;
-    }).catch(() => caches.match(event.request).then((cached) => cached ?? caches.match("/"))));
+    }).catch(() => caches.match(event.request).then((cached) => cached ?? caches.match(new URL("./", self.registration.scope).toString()))));
     return;
   }
   event.respondWith(

@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import vinext from "vinext";
 import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
@@ -10,6 +14,25 @@ const { d1, r2 } = hostingConfig;
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
+const projectRoot = fileURLToPath(new URL(".", import.meta.url));
+const sitesPwaPlugin = {
+  name: "sites-pwa-assets",
+  closeBundle() {
+    const distClient = resolve(projectRoot, "dist/client");
+    const serviceWorkerPath = resolve(distClient, "sw.js");
+    if (!existsSync(serviceWorkerPath)) return;
+    const assetDirectory = resolve(distClient, "assets");
+    const assetFiles = existsSync(assetDirectory)
+      ? readdirSync(assetDirectory).map((file) => `./assets/${file}`)
+      : [];
+    const rootAssets = ["./manifest.webmanifest", "./favicon.svg", "./apple-touch-icon.png", "./icon-192.png", "./icon-512.png"];
+    const html = existsSync(resolve(distClient, "index.html")) ? readFileSync(resolve(distClient, "index.html"), "utf8") : "";
+    const cacheVersion = createHash("sha256").update(html).update([...rootAssets, ...assetFiles].join("\n")).digest("hex").slice(0, 12);
+    const serviceWorker = readFileSync(serviceWorkerPath, "utf8");
+    const encodedAssets = JSON.stringify(JSON.stringify(assetFiles));
+    writeFileSync(serviceWorkerPath, serviceWorker.replace('"__STATIC_ASSETS__"', encodedAssets).replace("__CACHE_VERSION__", cacheVersion));
+  },
+};
 
 const localBindingConfig = {
   main: "./worker/index.ts",
@@ -54,6 +77,7 @@ export default defineConfig(async () => {
     plugins: [
       vinext(),
       sites(),
+      sitesPwaPlugin,
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         inspectorPort: false,

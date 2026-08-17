@@ -9,10 +9,11 @@ import {
   retryDelayHours,
 } from "../app/learning-state.ts";
 
-test("mastery completes only after three successful levels", () => {
+test("mastery completes only after the delayed retest", () => {
   assert.equal(isMasteryComplete(0), false);
   assert.equal(isMasteryComplete(2), false);
-  assert.equal(isMasteryComplete(3), true);
+  assert.equal(isMasteryComplete(3), false);
+  assert.equal(isMasteryComplete(4), true);
 });
 
 test("practice snapshots keep valid resume data and reject invalid phases", () => {
@@ -21,6 +22,7 @@ test("practice snapshots keep valid resume data and reject invalid phases", () =
     conceptId: "I-01",
     problemId: "Q-I01-01",
     phase: "question",
+    lessonStep: "overview",
     answer: 2,
     feedback: { correct: false, explanation: "復習する" },
     errorCause: "procedure",
@@ -31,6 +33,7 @@ test("practice snapshots keep valid resume data and reject invalid phases", () =
     conceptId: "I-01",
     problemId: "Q-I01-01",
     phase: "question",
+    lessonStep: "overview",
     answer: 2,
     feedback: { correct: false, explanation: "復習する" },
     errorCause: "procedure",
