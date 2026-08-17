@@ -1,3 +1,14 @@
+import {
+  mergeErrorHistory,
+  isErrorCause,
+  normalizeErrorHistory,
+  normalizePracticeSnapshot,
+  type ErrorCause,
+  type ErrorHistory,
+  type PracticeResumeState,
+  type RetryState,
+} from "./learning-state";
+
 export type PersistedProgress = {
   mastery: Record<string, number>;
   attempts: Record<string, {
@@ -6,11 +17,15 @@ export type PersistedProgress = {
     lastAt: string;
     dueAt?: string;
     streak?: number;
+    lastErrorCause?: ErrorCause;
+    retry?: RetryState;
   }>;
   studyDates: string[];
   studySeconds: number;
   awaySeconds: number;
   guideSeen: Record<string, boolean>;
+  practice?: PracticeResumeState;
+  errorHistory?: ErrorHistory;
 };
 
 const DB_NAME = "kyote-math-60";
@@ -24,6 +39,8 @@ const LOCAL_KEYS = {
   studySeconds: "kyote-math-60:study-seconds",
   awaySeconds: "kyote-math-60:away-seconds",
   guideSeen: "kyote-math-60:guide-seen",
+  practice: "kyote-math-60:practice",
+  errorHistory: "kyote-math-60:error-history",
 } as const;
 
 let writeQueue = Promise.resolve();
@@ -47,7 +64,14 @@ function normalizeProgress(value: unknown): PersistedProgress | null {
     const lastAt = typeof rawAttempt.lastAt === "string" ? rawAttempt.lastAt : new Date().toISOString();
     const dueAt = typeof rawAttempt.dueAt === "string" ? rawAttempt.dueAt : undefined;
     const streak = typeof rawAttempt.streak === "number" && Number.isFinite(rawAttempt.streak) ? Math.max(0, Math.floor(rawAttempt.streak)) : undefined;
-    attempts[id] = { correct: Math.min(correct, total), total, lastAt, dueAt, streak };
+    const lastErrorCause = isErrorCause(rawAttempt.lastErrorCause) ? rawAttempt.lastErrorCause : undefined;
+    const retry = isRecord(rawAttempt.retry)
+      && typeof rawAttempt.retry.problemId === "string"
+      && typeof rawAttempt.retry.scheduledAt === "string"
+      && isErrorCause(rawAttempt.retry.cause)
+      ? { cause: rawAttempt.retry.cause, problemId: rawAttempt.retry.problemId, scheduledAt: rawAttempt.retry.scheduledAt }
+      : undefined;
+    attempts[id] = { correct: Math.min(correct, total), total, lastAt, dueAt, streak, lastErrorCause, retry };
   }
   const studyDates = Array.isArray(value.studyDates)
     ? value.studyDates.filter((date): date is string => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date))
@@ -60,7 +84,9 @@ function normalizeProgress(value: unknown): PersistedProgress | null {
       if (seen === true) guideSeen[id] = true;
     }
   }
-  return { mastery, attempts, studyDates: [...new Set(studyDates)].slice(-180), studySeconds, awaySeconds, guideSeen };
+  const practice = normalizePracticeSnapshot(value.practice);
+  const errorHistory = normalizeErrorHistory(value.errorHistory);
+  return { mastery, attempts, studyDates: [...new Set(studyDates)].slice(-180), studySeconds, awaySeconds, guideSeen, practice, errorHistory };
 }
 
 function readLocalProgress(): PersistedProgress | null {
@@ -72,7 +98,9 @@ function readLocalProgress(): PersistedProgress | null {
     const studySecondsRaw = window.localStorage.getItem(LOCAL_KEYS.studySeconds);
     const awaySecondsRaw = window.localStorage.getItem(LOCAL_KEYS.awaySeconds);
     const guideSeenRaw = window.localStorage.getItem(LOCAL_KEYS.guideSeen);
-    if (masteryRaw === null && attemptsRaw === null && studyDatesRaw === null && studySecondsRaw === null && awaySecondsRaw === null && guideSeenRaw === null) return null;
+    const practiceRaw = window.localStorage.getItem(LOCAL_KEYS.practice);
+    const errorHistoryRaw = window.localStorage.getItem(LOCAL_KEYS.errorHistory);
+    if (masteryRaw === null && attemptsRaw === null && studyDatesRaw === null && studySecondsRaw === null && awaySecondsRaw === null && guideSeenRaw === null && practiceRaw === null && errorHistoryRaw === null) return null;
     return normalizeProgress({
       mastery: JSON.parse(masteryRaw ?? "{}") as unknown,
       attempts: JSON.parse(attemptsRaw ?? "{}") as unknown,
@@ -80,6 +108,8 @@ function readLocalProgress(): PersistedProgress | null {
       studySeconds: studySecondsRaw === null ? 0 : Number(studySecondsRaw),
       awaySeconds: awaySecondsRaw === null ? 0 : Number(awaySecondsRaw),
       guideSeen: JSON.parse(guideSeenRaw ?? "{}") as unknown,
+      practice: JSON.parse(practiceRaw ?? "null") as unknown,
+      errorHistory: JSON.parse(errorHistoryRaw ?? "{}") as unknown,
     });
   } catch {
     return null;
@@ -112,6 +142,8 @@ function mergeProgress(left: PersistedProgress, right: PersistedProgress): Persi
     studySeconds: Math.max(left.studySeconds, right.studySeconds),
     awaySeconds: Math.max(left.awaySeconds, right.awaySeconds),
     guideSeen,
+    practice: left.practice ?? right.practice,
+    errorHistory: mergeErrorHistory(left.errorHistory ?? {}, right.errorHistory ?? {}),
   };
 }
 
@@ -153,6 +185,10 @@ async function persistProgress(progress: PersistedProgress) {
     window.localStorage.setItem(LOCAL_KEYS.studySeconds, String(progress.studySeconds));
     window.localStorage.setItem(LOCAL_KEYS.awaySeconds, String(progress.awaySeconds));
     window.localStorage.setItem(LOCAL_KEYS.guideSeen, JSON.stringify(progress.guideSeen));
+    if (progress.practice) window.localStorage.setItem(LOCAL_KEYS.practice, JSON.stringify(progress.practice));
+    else window.localStorage.removeItem(LOCAL_KEYS.practice);
+    if (progress.errorHistory && Object.keys(progress.errorHistory).length > 0) window.localStorage.setItem(LOCAL_KEYS.errorHistory, JSON.stringify(progress.errorHistory));
+    else window.localStorage.removeItem(LOCAL_KEYS.errorHistory);
   } catch {
     // IndexedDB is attempted below even when localStorage is unavailable.
   }

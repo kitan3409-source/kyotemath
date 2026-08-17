@@ -234,6 +234,17 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 }
 
 .feedback-actions { display: flex; flex-wrap: wrap; gap: 14px; }
+.error-cause-picker { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+.error-cause-picker > strong { display: block; margin-bottom: 9px; color: var(--text); font-size: 12px; }
+.error-cause-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.cause-button { display: grid; gap: 3px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--text); text-align: left; }
+.cause-button:hover, .cause-button.selected { border-color: var(--cyan); background: rgb(139 226 223 / 8%); }
+.cause-button span { font-size: 11px; }
+.cause-button small { color: var(--muted-2); font-size: 9px; line-height: 1.4; }
+.cause-selected { margin: 10px 0 0; color: var(--cyan) !important; font-size: 10px !important; }
+.review-route { border-color: rgb(139 226 223 / 25%); background: rgb(139 226 223 / 5%); }
+.review-route h3 { margin: 6px 0; font-size: 16px; }
+.review-route p:not(.eyebrow) { max-width: 680px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
 
 /* Touch, focus and small-screen guardrails. */
 .button { min-height: 44px; }

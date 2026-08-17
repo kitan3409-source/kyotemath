@@ -18,6 +18,21 @@ import { problemExpansionBatch03 } from "./content/problem-expansion-batch-03";
 import { problemExpansionBatch04 } from "./content/problem-expansion-batch-04";
 import { problemExpansionBatch05 } from "./content/problem-expansion-batch-05";
 import { problemExpansionBulk } from "./content/problem-expansion-bulk";
+import {
+  appendErrorRecord,
+  ERROR_CAUSE_OPTIONS,
+  isErrorCause,
+  isMasteryComplete,
+  normalizeErrorHistory,
+  normalizePracticeSnapshot,
+  retryDelayHours,
+  type ErrorCause,
+  type ErrorHistory,
+  type PracticeFeedback,
+  type PracticePhase,
+  type PracticeResumeState,
+  type RetryState,
+} from "./learning-state";
 import { clearProgress, loadProgress, saveProgress, type PersistedProgress } from "./storage";
 import {
   awaySeconds as sessionAwaySeconds,
@@ -37,9 +52,8 @@ import {
 type Concept = (typeof conceptData.concepts)[number];
 type Tab = "today" | "map" | "practice" | "mock" | "settings";
 type CourseFilter = "all" | "bridge" | "I" | "A" | "II" | "B" | "C" | "III";
-type PracticePhase = "lesson" | "question";
-type Attempt = { correct: number; total: number; lastAt: string; dueAt?: string; streak?: number };
-type Feedback = { correct: boolean; explanation: string };
+type Attempt = { correct: number; total: number; lastAt: string; dueAt?: string; streak?: number; lastErrorCause?: ErrorCause; retry?: RetryState };
+type Feedback = PracticeFeedback;
 type MockSession = { active: boolean; index: number; answers: Record<string, number>; finished: boolean };
 type SessionEvidence = { questions: number; routeStart: number; routeEnd: number };
 type StoredStudySession = StudySessionState;
@@ -183,6 +197,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function normalizePracticeForContent(value: unknown): PracticeResumeState | undefined {
+  const snapshot = normalizePracticeSnapshot(value);
+  if (!snapshot) return undefined;
+  const problem = problemBank.find((candidate) => candidate.id === snapshot.problemId);
+  if (!problem) return undefined;
+  const conceptId = conceptById.has(snapshot.conceptId) && problem.conceptIds.includes(snapshot.conceptId)
+    ? snapshot.conceptId
+    : primaryConceptIdFor(problem);
+  if (!conceptId || !conceptById.has(conceptId)) return undefined;
+  return { ...snapshot, conceptId, answer: snapshot.answer !== null && snapshot.answer >= problem.options.length ? null : snapshot.answer };
+}
+
+function normalizeErrorHistoryForContent(value: unknown): ErrorHistory {
+  const normalized = normalizeErrorHistory(value);
+  const knownProblemIds = new Set(problemBank.map((problem) => problem.id));
+  const filtered: ErrorHistory = {};
+  for (const [conceptId, entries] of Object.entries(normalized)) {
+    if (!conceptById.has(conceptId)) continue;
+    const validEntries = entries.filter((entry) => knownProblemIds.has(entry.problemId));
+    if (validEntries.length > 0) filtered[conceptId] = validEntries;
+  }
+  return filtered;
+}
+
 function normalizeImportedProgress(value: unknown): PersistedProgress | null {
   if (!isRecord(value) || !isRecord(value.mastery) || !isRecord(value.attempts)) return null;
   const nextMastery: Record<string, number> = {};
@@ -199,7 +237,16 @@ function normalizeImportedProgress(value: unknown): PersistedProgress | null {
     const lastAt = typeof rawAttempt.lastAt === "string" ? rawAttempt.lastAt : new Date().toISOString();
     const dueAt = typeof rawAttempt.dueAt === "string" ? rawAttempt.dueAt : undefined;
     const streak = typeof rawAttempt.streak === "number" ? Math.max(0, Math.floor(rawAttempt.streak)) : undefined;
-    nextAttempts[id] = { correct: Math.min(correct, total), total, lastAt, dueAt, streak };
+    const lastErrorCause = isErrorCause(rawAttempt.lastErrorCause) ? rawAttempt.lastErrorCause : undefined;
+    const rawRetry = isRecord(rawAttempt.retry) ? rawAttempt.retry : null;
+    const retry = rawRetry
+      && typeof rawRetry.problemId === "string"
+      && problemBank.some((problem) => problem.id === rawRetry.problemId)
+      && typeof rawRetry.scheduledAt === "string"
+      && isErrorCause(rawRetry.cause)
+      ? { cause: rawRetry.cause, problemId: rawRetry.problemId, scheduledAt: rawRetry.scheduledAt }
+      : undefined;
+    nextAttempts[id] = { correct: Math.min(correct, total), total, lastAt, dueAt, streak, lastErrorCause, retry };
   }
   const dates = Array.isArray(value.studyDates)
     ? value.studyDates.filter((date): date is string => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date))
@@ -212,7 +259,16 @@ function normalizeImportedProgress(value: unknown): PersistedProgress | null {
       if (conceptById.has(id) && seen === true) guideSeen[id] = true;
     }
   }
-  return { mastery: nextMastery, attempts: nextAttempts, studyDates: [...new Set(dates)].slice(-180), studySeconds, awaySeconds, guideSeen };
+  return {
+    mastery: nextMastery,
+    attempts: nextAttempts,
+    studyDates: [...new Set(dates)].slice(-180),
+    studySeconds,
+    awaySeconds,
+    guideSeen,
+    practice: normalizePracticeForContent(value.practice),
+    errorHistory: normalizeErrorHistoryForContent(value.errorHistory),
+  };
 }
 
 function normalizeMockSession(value: unknown): MockSession | null {
@@ -265,6 +321,10 @@ export default function Home() {
   const [practicePhase, setPracticePhase] = useState<PracticePhase>("lesson");
   const [practiceAnswer, setPracticeAnswer] = useState<number | null>(null);
   const [practiceFeedback, setPracticeFeedback] = useState<Feedback | null>(null);
+  const [practiceResumeActive, setPracticeResumeActive] = useState(false);
+  const [practiceErrorCause, setPracticeErrorCause] = useState<ErrorCause | null>(null);
+  const [practiceReviewCause, setPracticeReviewCause] = useState<ErrorCause | null>(null);
+  const [errorHistory, setErrorHistory] = useState<ErrorHistory>({});
   const [mockActive, setMockActive] = useState(false);
   const [mockIndex, setMockIndex] = useState(0);
   const [mockAnswers, setMockAnswers] = useState<Record<string, number>>({});
@@ -291,6 +351,20 @@ export default function Home() {
   const setupPrimaryRef = useRef<HTMLButtonElement | null>(null);
   const summaryCloseRef = useRef<HTMLButtonElement | null>(null);
 
+  function currentPracticeResume(): PracticeResumeState | undefined {
+    if (!practiceResumeActive) return undefined;
+    return {
+      active: true,
+      conceptId: selectedConceptId,
+      problemId: practiceProblemId,
+      phase: practicePhase,
+      answer: practiceAnswer,
+      feedback: practiceFeedback,
+      errorCause: practiceErrorCause,
+      reviewCause: practiceReviewCause,
+    };
+  }
+
   useEffect(() => {
     const syncOnline = () => setIsOnline(navigator.onLine);
     syncOnline();
@@ -315,6 +389,19 @@ export default function Home() {
         setStudySeconds(progress.studySeconds);
         setAwaySeconds(progress.awaySeconds);
         setGuideSeen(progress.guideSeen);
+        setErrorHistory(normalizeErrorHistoryForContent(progress.errorHistory));
+        const restoredPractice = normalizePracticeForContent(progress.practice);
+        if (restoredPractice?.active) {
+          setPracticeResumeActive(true);
+          setSelectedConceptId(restoredPractice.conceptId);
+          setPracticeProblemId(restoredPractice.problemId);
+          setPracticePhase(restoredPractice.phase);
+          setPracticeAnswer(restoredPractice.answer);
+          setPracticeFeedback(restoredPractice.feedback);
+          setPracticeErrorCause(restoredPractice.errorCause);
+          setPracticeReviewCause(restoredPractice.reviewCause);
+          setActiveTab("practice");
+        }
         setIsDark(storedTheme !== "light");
         setNoiseOn(false);
         setSetupOpen(false);
@@ -373,8 +460,11 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated) return;
-    void saveProgress({ mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen });
-  }, [attempts, awaySeconds, guideSeen, hydrated, mastery, studyDates, studySeconds]);
+    const practice = practiceResumeActive
+      ? { active: true, conceptId: selectedConceptId, problemId: practiceProblemId, phase: practicePhase, answer: practiceAnswer, feedback: practiceFeedback, errorCause: practiceErrorCause, reviewCause: practiceReviewCause }
+      : undefined;
+    void saveProgress({ mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice, errorHistory });
+  }, [attempts, awaySeconds, errorHistory, guideSeen, hydrated, mastery, practiceAnswer, practiceErrorCause, practiceFeedback, practicePhase, practiceProblemId, practiceResumeActive, practiceReviewCause, selectedConceptId, studyDates, studySeconds]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -491,11 +581,8 @@ export default function Home() {
   const hasPractice = (conceptId: string) => problemByConcept.has(conceptId);
   const commonTestConcepts = concepts.filter(isCommonTestConcept);
   const isRouteTouched = (concept: Concept) => (mastery[concept.id] ?? 0) > 0 || Boolean(guideSeen[concept.id]) || Boolean(attempts[concept.id]);
-  const isRouteComplete = (concept: Concept) => (mastery[concept.id] ?? 0) > 0 || Boolean(guideSeen[concept.id]) || Boolean(attempts[concept.id]);
-  const isPrerequisiteReady = (id: string) => {
-    const prerequisite = conceptById.get(id);
-    return (mastery[id] ?? 0) >= 3 || Boolean(prerequisite && isRouteComplete(prerequisite)) || (!hasPractice(id) && Boolean(guideSeen[id]));
-  };
+  const isRouteComplete = (concept: Concept) => isMasteryComplete(mastery[concept.id]);
+  const isPrerequisiteReady = (id: string) => isMasteryComplete(mastery[id]);
   const isUnlocked = (concept: Concept) => concept.requires.every(isPrerequisiteReady);
   const nextConcept = (() => {
     const now = currentTime();
@@ -530,7 +617,8 @@ export default function Home() {
   const nextStudyMilestone = studyMilestones.find((hours) => studyProgress.studiedHours < hours) ?? 700;
   const milestoneRemainingSeconds = Math.max(0, Math.ceil(nextStudyMilestone * 3600 - liveStudySeconds));
   const routeTouchedCount = commonTestConcepts.filter(isRouteTouched).length;
-  const routeProgress = commonTestConcepts.length ? Math.round((routeTouchedCount / commonTestConcepts.length) * 100) : 0;
+  const routeCompleteCount = commonTestConcepts.filter(isRouteComplete).length;
+  const routeProgress = commonTestConcepts.length ? Math.round((routeCompleteCount / commonTestConcepts.length) * 100) : 0;
   const availableConceptCount = commonTestConcepts.filter((concept) => hasPractice(concept.id)).length;
   const learnedCount = commonTestConcepts.filter((concept) => (mastery[concept.id] ?? 0) >= 3).length;
   const selectedLevel = mastery[selectedConcept.id] ?? 0;
@@ -558,10 +646,13 @@ export default function Home() {
     setSelectedConceptId(concept.id);
     const problem = problemForConcept(concept.id, mastery[concept.id] ?? 0);
     if (!problem) return;
+    setPracticeResumeActive(true);
     setPracticeProblemId(problem.id);
     setPracticePhase("lesson");
     setPracticeAnswer(null);
     setPracticeFeedback(null);
+    setPracticeErrorCause(null);
+    setPracticeReviewCause(null);
     setActiveTab("practice");
   }
 
@@ -576,7 +667,15 @@ export default function Home() {
       const intervalDays = correct ? [0, 1, 3, 7, 21][nextLevel] ?? 21 : 0;
       const dueAt = new Date(currentTime() + intervalDays * 24 * 60 * 60 * 1000).toISOString();
       const old = next[primaryConceptId] ?? { correct: 0, total: 0, lastAt: now };
-      next[primaryConceptId] = { correct: old.correct + (correct ? 1 : 0), total: old.total + 1, lastAt: now, dueAt, streak: correct ? (old.streak ?? 0) + 1 : 0 };
+      next[primaryConceptId] = {
+        correct: old.correct + (correct ? 1 : 0),
+        total: old.total + 1,
+        lastAt: now,
+        dueAt,
+        streak: correct ? (old.streak ?? 0) + 1 : 0,
+        lastErrorCause: correct ? old.lastErrorCause : undefined,
+        retry: undefined,
+      };
       return next;
     });
     if (correct) {
@@ -598,7 +697,45 @@ export default function Home() {
     if (practiceAnswer === null || practiceFeedback) return;
     const correct = practiceAnswer === currentPractice.answer;
     setPracticeFeedback({ correct, explanation: currentPractice.explanation });
+    setPracticeErrorCause(null);
+    if (correct) setPracticeReviewCause(null);
     recordAttempt(currentPractice, correct);
+  }
+
+  function selectErrorCause(cause: ErrorCause) {
+    if (!practiceFeedback || practiceFeedback.correct) return;
+    const conceptId = primaryConceptIdFor(currentPractice);
+    const scheduledAt = new Date(currentTime() + retryDelayHours(cause) * 60 * 60 * 1000).toISOString();
+    setPracticeErrorCause(cause);
+    setAttempts((previous) => {
+      const current = previous[conceptId] ?? { correct: 0, total: 0, lastAt: scheduledAt };
+      return {
+        ...previous,
+        [conceptId]: {
+          ...current,
+          lastErrorCause: cause,
+          dueAt: scheduledAt,
+          retry: { cause, problemId: currentPractice.id, scheduledAt },
+        },
+      };
+    });
+    setErrorHistory((previous) => appendErrorRecord(previous, conceptId, { problemId: currentPractice.id, cause, at: new Date().toISOString() }));
+  }
+
+  function retryFromError() {
+    if (!practiceErrorCause) return;
+    const conceptId = primaryConceptIdFor(currentPractice);
+    const alternative = [...(problemsByConcept.get(conceptId) ?? [])]
+      .filter((problem) => problem.id !== currentPractice.id)
+      .sort((a, b) => problemKindOrder[a.kind] - problemKindOrder[b.kind] || a.id.localeCompare(b.id))[0] ?? currentPractice;
+    setPracticeResumeActive(true);
+    setSelectedConceptId(conceptId);
+    setPracticeProblemId(alternative.id);
+    setPracticePhase("lesson");
+    setPracticeAnswer(null);
+    setPracticeFeedback(null);
+    setPracticeReviewCause(practiceErrorCause);
+    setPracticeErrorCause(null);
   }
 
   function nextPractice() {
@@ -608,7 +745,11 @@ export default function Home() {
       const concept = conceptById.get(primaryConceptIdFor(problem));
       return Boolean(concept && isCommonTestConcept(concept) && isUnlocked(concept));
     });
-    const next = alternatives.sort((a, b) => {
+    const dueRetry = alternatives.find((problem) => {
+      const retry = attempts[primaryConceptIdFor(problem)]?.retry;
+      return retry?.problemId === problem.id && Date.parse(retry.scheduledAt) <= now;
+    });
+    const next = dueRetry ?? alternatives.sort((a, b) => {
       const aId = primaryConceptIdFor(a);
       const bId = primaryConceptIdFor(b);
       const aDue = aId && attempts[aId]?.dueAt && Date.parse(attempts[aId].dueAt as string) <= now ? 0 : 1;
@@ -616,9 +757,12 @@ export default function Home() {
       return aDue - bDue || (mastery[aId] ?? 0) - (mastery[bId] ?? 0);
     })[0] ?? currentPractice;
     setPracticeProblemId(next.id);
+    setPracticeResumeActive(true);
     setPracticePhase("lesson");
     setPracticeAnswer(null);
     setPracticeFeedback(null);
+    setPracticeErrorCause(null);
+    setPracticeReviewCause(null);
     const firstConcept = conceptById.get(primaryConceptIdFor(next));
     if (firstConcept) setSelectedConceptId(firstConcept.id);
   }
@@ -627,11 +771,6 @@ export default function Home() {
     nextPractice();
     setSessionSummary(null);
     setActiveTab("practice");
-  }
-
-  function retryPractice() {
-    setPracticeAnswer(null);
-    setPracticeFeedback(null);
   }
 
   function beginFocus() {
@@ -682,7 +821,6 @@ export default function Home() {
   function markGuideRead(concept: Concept) {
     if (!conceptGuides[concept.id] && !lessonByConcept.has(concept.id)) return;
     setGuideSeen((previous) => previous[concept.id] ? previous : { ...previous, [concept.id]: true });
-    setMastery((previous) => ({ ...previous, [concept.id]: Math.max(previous[concept.id] ?? 0, 1) }));
     recordStudyDay();
   }
 
@@ -785,11 +923,17 @@ export default function Home() {
   function skipFoundation() {
     const bridgeMastery = Object.fromEntries(concepts.filter((concept) => concept.course === "bridge").map((concept) => [concept.id, 3]));
     const mergedMastery = { ...mastery, ...bridgeMastery };
+    const initialPractice: PracticeResumeState = { active: true, conceptId: "I-01", problemId: "Q-I01-01", phase: "lesson", answer: null, feedback: null, errorCause: null, reviewCause: null };
     setMastery(mergedMastery);
-    void saveProgress({ mastery: mergedMastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen });
+    void saveProgress({ mastery: mergedMastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice: initialPractice, errorHistory });
     setSelectedConceptId("I-01");
     setPracticeProblemId("Q-I01-01");
     setPracticePhase("lesson");
+    setPracticeResumeActive(true);
+    setPracticeAnswer(null);
+    setPracticeFeedback(null);
+    setPracticeErrorCause(null);
+    setPracticeReviewCause(null);
     setActiveTab("practice");
     writeStored(storageKeys.initialized, "true");
     setSetupOpen(false);
@@ -801,11 +945,16 @@ export default function Home() {
     setSelectedConceptId("F-01");
     setPracticeProblemId("Q-F01-01");
     setPracticePhase("lesson");
+    setPracticeResumeActive(true);
+    setPracticeAnswer(null);
+    setPracticeFeedback(null);
+    setPracticeErrorCause(null);
+    setPracticeReviewCause(null);
     setActiveTab("practice");
   }
 
   function exportData() {
-    const payload = { exportedAt: new Date().toISOString(), mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, curriculum: "high_school_math_concepts.v1" };
+    const payload = { exportedAt: new Date().toISOString(), mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice: currentPracticeResume(), errorHistory, curriculum: "high_school_math_concepts.v1" };
     const fileName = "kyote-math-60-progress.json";
     const content = JSON.stringify(payload, null, 2);
     const file = new File([content], fileName, { type: "application/json" });
@@ -846,6 +995,27 @@ export default function Home() {
       setStudySeconds(imported.studySeconds);
       setAwaySeconds(imported.awaySeconds);
       setGuideSeen(imported.guideSeen);
+      setErrorHistory(normalizeErrorHistoryForContent(imported.errorHistory));
+      const importedPractice = normalizePracticeForContent(imported.practice);
+      if (importedPractice?.active) {
+        setPracticeResumeActive(true);
+        setSelectedConceptId(importedPractice.conceptId);
+        setPracticeProblemId(importedPractice.problemId);
+        setPracticePhase(importedPractice.phase);
+        setPracticeAnswer(importedPractice.answer);
+        setPracticeFeedback(importedPractice.feedback);
+        setPracticeErrorCause(importedPractice.errorCause);
+        setPracticeReviewCause(importedPractice.reviewCause);
+        setActiveTab("practice");
+      } else {
+        setPracticeResumeActive(false);
+        setPracticePhase("lesson");
+        setPracticeProblemId("");
+        setPracticeAnswer(null);
+        setPracticeFeedback(null);
+        setPracticeErrorCause(null);
+        setPracticeReviewCause(null);
+      }
       await saveProgress(imported);
       writeStored(storageKeys.initialized, "true");
       setSetupOpen(false);
@@ -867,6 +1037,12 @@ export default function Home() {
     setStudySeconds(0);
     setAwaySeconds(0);
     setGuideSeen({});
+    setErrorHistory({});
+    setPracticeResumeActive(false);
+    setPracticeAnswer(null);
+    setPracticeFeedback(null);
+    setPracticeErrorCause(null);
+    setPracticeReviewCause(null);
     setSessionSummary(null);
     setSessionEvidence(null);
     studySessionRef.current = null;
@@ -970,7 +1146,34 @@ export default function Home() {
       <div className="page-stack">
         <div className="page-heading"><div><p className="eyebrow accent">PRACTICE LOOP</p><h2>1問で、理解を更新する</h2><p>答えだけでなく、どの概念を使ったかを記録する。</p></div><span className="mode-badge">{currentPractice.kind === "quick" ? "QUICK CHECK" : currentPractice.kind === "transfer" ? "TRANSFER" : "STANDARD"}</span></div>
         <div className="practice-layout">
-          <section className="question-card panel-card"><div className="question-top"><span>{currentPractice.id}</span><span>目安 {currentPractice.estimatedSeconds}秒</span></div><h3>{currentPractice.title}</h3><p className="question-prompt">{currentPractice.prompt}</p><div className="option-list">{currentPractice.options.map((option, index) => <button className={`option-button ${practiceAnswer === index ? "chosen" : ""} ${practiceFeedback && index === currentPractice.answer ? "correct-option" : ""} ${practiceFeedback && practiceAnswer === index && index !== currentPractice.answer ? "wrong-option" : ""}`} type="button" aria-pressed={practiceAnswer === index} key={option} onClick={() => !practiceFeedback && setPracticeAnswer(index)}><span className="option-key">{String.fromCharCode(65 + index)}</span><span>{option}</span>{practiceFeedback && index === currentPractice.answer && <span className="answer-mark">✓</span>}</button>)}</div><div className="question-actions">{practiceFeedback ? <button className="button button-primary" type="button" onClick={nextPractice}>次の1問へ <span>→</span></button> : <button className="button button-primary" type="button" disabled={practiceAnswer === null} onClick={submitPractice}>答えを記録する <span>↗</span></button>}{selectedOption && !practiceFeedback && <span className="selected-note">選択：{selectedOption}</span>}</div>{practiceFeedback && <div className={`feedback-box ${practiceFeedback.correct ? "success" : "retry"}`} aria-live="polite"><strong>{practiceFeedback.correct ? "正解。概念レベルを更新した。" : "今回はここで止めてOK。解説から戻ろう。"}</strong><p>{practiceFeedback.explanation}</p>{!practiceFeedback.correct && <div className="feedback-actions"><button className="text-button" type="button" onClick={retryPractice}>もう一度解く</button><button className="text-button" type="button" onClick={() => setPracticeAnswer(currentPractice.answer)}>正答を表示</button></div>}</div>}</section>
+          <section className="question-card panel-card">
+            <div className="question-top"><span>{currentPractice.id}</span><span>目安 {currentPractice.estimatedSeconds}秒</span></div>
+            <h3>{currentPractice.title}</h3>
+            <p className="question-prompt">{currentPractice.prompt}</p>
+            <div className="option-list">
+              {currentPractice.options.map((option, index) => <button className={["option-button", practiceAnswer === index ? "chosen" : "", practiceFeedback && index === currentPractice.answer ? "correct-option" : "", practiceFeedback && practiceAnswer === index && index !== currentPractice.answer ? "wrong-option" : ""].filter(Boolean).join(" ")} type="button" aria-pressed={practiceAnswer === index} key={option} onClick={() => !practiceFeedback && setPracticeAnswer(index)}><span className="option-key">{String.fromCharCode(65 + index)}</span><span>{option}</span>{practiceFeedback && index === currentPractice.answer && <span className="answer-mark">✓</span>}</button>)}
+            </div>
+            <div className="question-actions">
+              {practiceFeedback
+                ? practiceFeedback.correct
+                  ? <button className="button button-primary" type="button" onClick={nextPractice}>次の1問へ <span>→</span></button>
+                  : <span className="selected-note">原因を1つ選ぶと、次の一手が出ます。</span>
+                : <button className="button button-primary" type="button" disabled={practiceAnswer === null} onClick={submitPractice}>答えを記録する <span>↗</span></button>}
+              {selectedOption && !practiceFeedback && <span className="selected-note">選択：{selectedOption}</span>}
+            </div>
+            {practiceFeedback && <div className={["feedback-box", practiceFeedback.correct ? "success" : "retry"].join(" ")} aria-live="polite">
+              <strong>{practiceFeedback.correct ? "正解。概念レベルを更新した。" : "まず、どこで止まったかを1つだけ選ぼう。"}</strong>
+              <p>{practiceFeedback.explanation}</p>
+              {!practiceFeedback.correct && <div className="error-cause-picker">
+                <strong>今回の原因</strong>
+                <div className="error-cause-list">
+                  {ERROR_CAUSE_OPTIONS.map((option) => <button className={["cause-button", practiceErrorCause === option.id ? "selected" : ""].filter(Boolean).join(" ")} type="button" key={option.id} onClick={() => selectErrorCause(option.id)}><span>{option.label}</span><small>{option.description}</small></button>)}
+                </div>
+                {practiceErrorCause && <p className="cause-selected">「{ERROR_CAUSE_OPTIONS.find((option) => option.id === practiceErrorCause)?.label}」として、短い復習を予約した。</p>}
+                <div className="feedback-actions"><button className="button button-primary" type="button" disabled={!practiceErrorCause} onClick={retryFromError}>原因別にやり直す <span>→</span></button><button className="text-button" type="button" onClick={() => setPracticeAnswer(currentPractice.answer)}>正答を表示</button></div>
+              </div>}
+            </div>}
+          </section>
           <aside className="side-stack">
             <section className="concept-side panel-card"><p className="eyebrow">LINKED CONCEPT</p><span className="side-id">{selectedConcept.id}</span><h3>{selectedConcept.title}</h3><p>{selectedConcept.target}</p><div className="side-level"><span>現在地</span><strong>Lv.{selectedLevel}</strong><small>{levelLabel(selectedLevel)}</small></div><button className="text-button" type="button" onClick={() => { setActiveTab("map"); setMapSearch(selectedConcept.id); }}>マップで確認 →</button></section>
             {selectedGuide && <section className="guide-card panel-card"><div className="guide-heading"><div><p className="eyebrow accent">1-MINUTE GUIDE</p><h3>解く前の3行</h3></div><span>{guideSeen[selectedConcept.id] ? "読了" : "読む"}</span></div><dl><div><dt>意味</dt><dd>{selectedGuide.definition}</dd></div><div><dt>最初の一手</dt><dd>{selectedGuide.firstMove}</dd></div><div><dt>罠</dt><dd>{selectedGuide.trap}</dd></div></dl><button className="button button-ghost button-small" type="button" onClick={() => markGuideRead(selectedConcept)}>{guideSeen[selectedConcept.id] ? "ガイド済み" : "解説を読んだ"} <span>✓</span></button></section>}
@@ -986,6 +1189,7 @@ export default function Home() {
     const lesson = selectedLesson;
     const prerequisiteIds = lesson?.prerequisiteIds ?? selectedConcept.requires;
     const prerequisiteNames = prerequisiteIds.map((id) => conceptById.get(id)?.title ?? id);
+    const reviewOption = practiceReviewCause ? ERROR_CAUSE_OPTIONS.find((option) => option.id === practiceReviewCause) : undefined;
     return (
       <div className="page-stack">
         <div className="page-heading">
@@ -1005,6 +1209,7 @@ export default function Home() {
           </div>
           <div className="lesson-time"><strong>{currentPractice.estimatedSeconds < 60 ? "3" : "5"}</strong><span>分で読む</span></div>
         </section>
+        {reviewOption && <section className="review-route panel-card"><p className="eyebrow accent">CAUSE-SPECIFIC REVIEW</p><h3>{reviewOption.label}を1問だけやり直す</h3><p>{reviewOption.description}。前回の問題とは別の表現で、同じ概念をもう一度確認します。</p></section>}
         {guide ? (
           <section className="lesson-grid">
             <article className="lesson-block panel-card"><span className="lesson-number">01</span><p className="eyebrow accent">CORE IDEA</p><h3>これは何？</h3><p>{guide.definition}</p></article>
