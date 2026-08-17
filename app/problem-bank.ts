@@ -1,3 +1,6 @@
+import { expansionIA } from "./content/expansion-ia";
+import { expansionIIBC } from "./content/expansion-iibc";
+
 export type Problem = {
   id: string;
   conceptIds: string[];
@@ -12,7 +15,7 @@ export type Problem = {
 };
 
 // オリジナルの確認問題。公式過去問は問題文を転載せず、出題構造だけを別途参照する。
-export const problemBank: Problem[] = [
+const baseProblemBank: Problem[] = [
   {
     id: "Q-F01-01",
     conceptIds: ["F-01"],
@@ -976,3 +979,5 @@ export const problemBank: Problem[] = [
     estimatedSeconds: 65,
   },
 ];
+
+export const problemBank: Problem[] = [...baseProblemBank, ...expansionIA, ...expansionIIBC];

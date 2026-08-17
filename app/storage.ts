@@ -8,6 +8,9 @@ export type PersistedProgress = {
     streak?: number;
   }>;
   studyDates: string[];
+  studySeconds: number;
+  awaySeconds: number;
+  guideSeen: Record<string, boolean>;
 };
 
 const DB_NAME = "kyote-math-60";
@@ -18,6 +21,9 @@ const LOCAL_KEYS = {
   mastery: "kyote-math-60:mastery",
   attempts: "kyote-math-60:attempts",
   studyDates: "kyote-math-60:study-dates",
+  studySeconds: "kyote-math-60:study-seconds",
+  awaySeconds: "kyote-math-60:away-seconds",
+  guideSeen: "kyote-math-60:guide-seen",
 } as const;
 
 let writeQueue = Promise.resolve();
@@ -46,7 +52,15 @@ function normalizeProgress(value: unknown): PersistedProgress | null {
   const studyDates = Array.isArray(value.studyDates)
     ? value.studyDates.filter((date): date is string => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date))
     : [];
-  return { mastery, attempts, studyDates: [...new Set(studyDates)].slice(-180) };
+  const studySeconds = typeof value.studySeconds === "number" && Number.isFinite(value.studySeconds) ? Math.max(0, Math.floor(value.studySeconds)) : 0;
+  const awaySeconds = typeof value.awaySeconds === "number" && Number.isFinite(value.awaySeconds) ? Math.max(0, Math.floor(value.awaySeconds)) : 0;
+  const guideSeen: Record<string, boolean> = {};
+  if (isRecord(value.guideSeen)) {
+    for (const [id, seen] of Object.entries(value.guideSeen)) {
+      if (seen === true) guideSeen[id] = true;
+    }
+  }
+  return { mastery, attempts, studyDates: [...new Set(studyDates)].slice(-180), studySeconds, awaySeconds, guideSeen };
 }
 
 function readLocalProgress(): PersistedProgress | null {
@@ -55,11 +69,17 @@ function readLocalProgress(): PersistedProgress | null {
     const masteryRaw = window.localStorage.getItem(LOCAL_KEYS.mastery);
     const attemptsRaw = window.localStorage.getItem(LOCAL_KEYS.attempts);
     const studyDatesRaw = window.localStorage.getItem(LOCAL_KEYS.studyDates);
-    if (masteryRaw === null && attemptsRaw === null && studyDatesRaw === null) return null;
+    const studySecondsRaw = window.localStorage.getItem(LOCAL_KEYS.studySeconds);
+    const awaySecondsRaw = window.localStorage.getItem(LOCAL_KEYS.awaySeconds);
+    const guideSeenRaw = window.localStorage.getItem(LOCAL_KEYS.guideSeen);
+    if (masteryRaw === null && attemptsRaw === null && studyDatesRaw === null && studySecondsRaw === null && awaySecondsRaw === null && guideSeenRaw === null) return null;
     return normalizeProgress({
       mastery: JSON.parse(masteryRaw ?? "{}") as unknown,
       attempts: JSON.parse(attemptsRaw ?? "{}") as unknown,
       studyDates: JSON.parse(studyDatesRaw ?? "[]") as unknown,
+      studySeconds: studySecondsRaw === null ? 0 : Number(studySecondsRaw),
+      awaySeconds: awaySecondsRaw === null ? 0 : Number(awaySecondsRaw),
+      guideSeen: JSON.parse(guideSeenRaw ?? "{}") as unknown,
     });
   } catch {
     return null;
@@ -67,7 +87,7 @@ function readLocalProgress(): PersistedProgress | null {
 }
 
 function localFallback(): PersistedProgress {
-  return readLocalProgress() ?? { mastery: {}, attempts: {}, studyDates: [] };
+  return readLocalProgress() ?? { mastery: {}, attempts: {}, studyDates: [], studySeconds: 0, awaySeconds: 0, guideSeen: {} };
 }
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -104,6 +124,9 @@ async function persistProgress(progress: PersistedProgress) {
     window.localStorage.setItem(LOCAL_KEYS.mastery, JSON.stringify(progress.mastery));
     window.localStorage.setItem(LOCAL_KEYS.attempts, JSON.stringify(progress.attempts));
     window.localStorage.setItem(LOCAL_KEYS.studyDates, JSON.stringify(progress.studyDates));
+    window.localStorage.setItem(LOCAL_KEYS.studySeconds, String(progress.studySeconds));
+    window.localStorage.setItem(LOCAL_KEYS.awaySeconds, String(progress.awaySeconds));
+    window.localStorage.setItem(LOCAL_KEYS.guideSeen, JSON.stringify(progress.guideSeen));
   } catch {
     // IndexedDB is attempted below even when localStorage is unavailable.
   }
