@@ -90,6 +90,31 @@ function localFallback(): PersistedProgress {
   return readLocalProgress() ?? { mastery: {}, attempts: {}, studyDates: [], studySeconds: 0, awaySeconds: 0, guideSeen: {} };
 }
 
+function mergeProgress(left: PersistedProgress, right: PersistedProgress): PersistedProgress {
+  const mastery: Record<string, number> = { ...left.mastery };
+  for (const [id, level] of Object.entries(right.mastery)) mastery[id] = Math.max(mastery[id] ?? 0, level);
+
+  const attempts: PersistedProgress["attempts"] = { ...left.attempts };
+  for (const [id, candidate] of Object.entries(right.attempts)) {
+    const current = attempts[id];
+    if (!current || candidate.total > current.total || (candidate.total === current.total && candidate.correct > current.correct)
+      || (candidate.total === current.total && candidate.correct === current.correct && candidate.lastAt > current.lastAt)) {
+      attempts[id] = candidate;
+    }
+  }
+
+  const guideSeen: Record<string, boolean> = { ...left.guideSeen };
+  for (const [id, seen] of Object.entries(right.guideSeen)) if (seen) guideSeen[id] = true;
+  return {
+    mastery,
+    attempts,
+    studyDates: [...new Set([...left.studyDates, ...right.studyDates])].sort().slice(-180),
+    studySeconds: Math.max(left.studySeconds, right.studySeconds),
+    awaySeconds: Math.max(left.awaySeconds, right.awaySeconds),
+    guideSeen,
+  };
+}
+
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = window.indexedDB.open(DB_NAME, DB_VERSION);
@@ -111,8 +136,9 @@ export async function loadProgress(): Promise<PersistedProgress> {
       request.onerror = () => reject(request.error);
     });
     database.close();
-    if (localProgress) return localProgress;
-    return normalizeProgress(value) ?? fallback;
+    const databaseProgress = normalizeProgress(value);
+    if (localProgress && databaseProgress) return mergeProgress(localProgress, databaseProgress);
+    return localProgress ?? databaseProgress ?? fallback;
   } catch {
     return fallback;
   }

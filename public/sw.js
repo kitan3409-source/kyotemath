@@ -1,14 +1,12 @@
-const CACHE_NAME = "kyote-math-60-v3";
+const CACHE_NAME = "kyote-math-60-v4";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.svg", "/apple-touch-icon.png", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
-  self.skipWaiting();
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))));
-  self.clients.claim();
+  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))).then(() => self.clients.claim()));
 });
 
 self.addEventListener("fetch", (event) => {
@@ -18,7 +16,7 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(fetch(event.request).then((response) => {
       if (!response.ok) return response;
       const copy = response.clone();
-      caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+      event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)));
       return response;
     }).catch(() => caches.match(event.request).then((cached) => cached ?? caches.match("/"))));
     return;
@@ -29,7 +27,7 @@ self.addEventListener("fetch", (event) => {
       return fetch(event.request).then((response) => {
         if (!response.ok && response.type !== "opaque") return response;
         const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)));
         return response;
       }).catch(() => caches.match(event.request).then((offlineCached) => offlineCached ?? Response.error()));
     }),

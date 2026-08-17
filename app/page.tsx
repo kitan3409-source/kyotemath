@@ -28,6 +28,12 @@ type Feedback = { correct: boolean; explanation: string };
 type MockSession = { active: boolean; index: number; answers: Record<string, number>; finished: boolean };
 type SessionEvidence = { questions: number; routeStart: number; routeEnd: number };
 type StoredStudySession = StudySessionState;
+type StoredStudySessionEnvelope = {
+  session: StudySessionState;
+  focusTotalSeconds: number;
+  sessionStartAttempts: number;
+  sessionStartRoute: number;
+};
 
 function primaryConceptIdFor(problem: Problem) {
   return problem.primaryConceptId ?? problem.conceptIds[0];
@@ -76,6 +82,15 @@ function formatTime(seconds: number) {
   return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
 }
 
+function formatStudyAmount(seconds: number) {
+  const safe = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  if (hours > 0) return `${hours}時間${minutes > 0 ? ` ${minutes}分` : ""}`;
+  if (minutes > 0) return `${minutes}分`;
+  return safe > 0 ? "1分未満" : "0分";
+}
+
 function levelLabel(level: number) {
   return ["未学習", "意味が分かる", "例題を再現", "標準を解ける", "転移できる"][level] ?? "未学習";
 }
@@ -87,6 +102,10 @@ function safeParse<T>(value: string | null, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function safeNonNegativeInteger(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
 function readStored(key: string) {
@@ -195,7 +214,7 @@ export default function Home() {
   const [expandedConceptId, setExpandedConceptId] = useState<string | null>(null);
   const [mapCourse, setMapCourse] = useState<CourseFilter>("all");
   const [mapSearch, setMapSearch] = useState("");
-  const [practiceProblemId, setPracticeProblemId] = useState(problemBank[0].id);
+  const [practiceProblemId, setPracticeProblemId] = useState(problemByConcept.get("I-01")?.id ?? problemBank[0].id);
   const [practiceAnswer, setPracticeAnswer] = useState<number | null>(null);
   const [practiceFeedback, setPracticeFeedback] = useState<Feedback | null>(null);
   const [mockActive, setMockActive] = useState(false);
@@ -234,7 +253,15 @@ export default function Home() {
         const storedTheme = readStored(storageKeys.theme);
         const legacyFocus = safeParse<{ totalSeconds?: number; startedAt?: number } | null>(readStored(storageKeys.focus), null);
         const storedMock = normalizeMockSession(safeParse<unknown>(readStored(storageKeys.mock), null));
-        setMastery(progress.mastery);
+        const firstRun = !readStored(storageKeys.initialized);
+        const initialMastery = { ...progress.mastery };
+        if (firstRun) {
+          for (const concept of concepts) {
+            if (concept.course === "bridge") initialMastery[concept.id] = Math.max(initialMastery[concept.id] ?? 0, 3);
+          }
+          writeStored(storageKeys.initialized, "true");
+        }
+        setMastery(initialMastery);
         setAttempts(progress.attempts);
         setStudyDates(progress.studyDates);
         setStudySeconds(progress.studySeconds);
@@ -242,37 +269,43 @@ export default function Home() {
         setGuideSeen(progress.guideSeen);
         setIsDark(storedTheme !== "light");
         setNoiseOn(false);
-        setSetupOpen(!readStored(storageKeys.initialized));
+        setSetupOpen(false);
         if (storedMock) {
           setMockActive(storedMock.active);
           setMockIndex(storedMock.index);
           setMockAnswers(storedMock.answers);
           setMockFinished(storedMock.finished);
         }
-        const storedSession = restoreStudySession(safeParse<unknown>(readStored(storageKeys.studySession), null));
-        const legacySession = !storedSession && typeof legacyFocus?.startedAt === "number"
-          ? startStudySession({ id: `legacy-focus-${legacyFocus.startedAt}`, startedAtMs: legacyFocus.startedAt })
+        const storedSessionValue = safeParse<unknown>(readStored(storageKeys.studySession), null);
+        const storedSessionEnvelope = isRecord(storedSessionValue) && isRecord(storedSessionValue.session) ? storedSessionValue : null;
+        const storedSession = restoreStudySession(storedSessionEnvelope?.session ?? storedSessionValue);
+        const legacyStartedAt = typeof legacyFocus?.startedAt === "number"
+          && Number.isSafeInteger(legacyFocus.startedAt)
+          && legacyFocus.startedAt >= 0
+          ? legacyFocus.startedAt
+          : null;
+        const legacySession = !storedSession && legacyStartedAt !== null
+          ? startStudySession({ id: `legacy-focus-${legacyStartedAt}`, startedAtMs: legacyStartedAt })
           : null;
         const recoveredSession = storedSession ?? legacySession;
-        const recoveredRemaining = legacyFocus?.startedAt && legacyFocus.totalSeconds
-          ? legacyFocus.totalSeconds - Math.floor((Date.now() - legacyFocus.startedAt) / 1000)
-          : null;
-        if (recoveredSession && (recoveredRemaining === null || recoveredRemaining > 0)) {
-          const resumed = resumeStudySession(recoveredSession, Date.now());
+        if (recoveredSession) {
+          const now = Date.now();
+          const resumed = resumeStudySession(recoveredSession, now);
           studySessionRef.current = resumed;
           setStudySession(resumed);
-          const totalSeconds = legacyFocus?.totalSeconds ?? 20 * 60;
+          const storedTotalSeconds = storedSessionEnvelope ? safeNonNegativeInteger(storedSessionEnvelope.focusTotalSeconds, 20 * 60) : 20 * 60;
+          const legacyTotalSeconds = typeof legacyFocus?.totalSeconds === "number"
+            && Number.isSafeInteger(legacyFocus.totalSeconds)
+            && legacyFocus.totalSeconds > 0
+            ? legacyFocus.totalSeconds
+            : 20 * 60;
+          const totalSeconds = storedSessionEnvelope ? storedTotalSeconds : legacyTotalSeconds;
           setFocusTotalSeconds(totalSeconds);
-          setFocusSeconds(recoveredRemaining === null ? totalSeconds : recoveredRemaining);
+          setFocusSeconds(sessionElapsedSeconds(resumed, now));
+          setSessionStartAttempts(storedSessionEnvelope ? safeNonNegativeInteger(storedSessionEnvelope.sessionStartAttempts, 0) : 0);
+          setSessionStartRoute(storedSessionEnvelope ? safeNonNegativeInteger(storedSessionEnvelope.sessionStartRoute, 0) : 0);
           setFocusRunning(true);
-        } else if (recoveredSession) {
-          const resumed = resumeStudySession(recoveredSession, Date.now());
-          const completed = stopStudySession(resumed, Date.now());
-          setStudySeconds(progress.studySeconds + completed.studySeconds);
-          setAwaySeconds(progress.awaySeconds + completed.awaySeconds);
-          setStudyDates((previous) => previous.includes(dayKey()) ? previous : [...previous, dayKey()].slice(-180));
           removeStored(storageKeys.focus);
-          removeStored(storageKeys.studySession);
         } else {
           removeStored(storageKeys.focus);
           removeStored(storageKeys.studySession);
@@ -304,9 +337,17 @@ export default function Home() {
   useEffect(() => {
     studySessionRef.current = studySession;
     if (!hydrated) return;
-    if (studySession) writeStored(storageKeys.studySession, JSON.stringify(studySession));
+    if (studySession) {
+      const envelope: StoredStudySessionEnvelope = {
+        session: studySession,
+        focusTotalSeconds,
+        sessionStartAttempts,
+        sessionStartRoute,
+      };
+      writeStored(storageKeys.studySession, JSON.stringify(envelope));
+    }
     else removeStored(storageKeys.studySession);
-  }, [hydrated, studySession]);
+  }, [focusTotalSeconds, hydrated, sessionStartAttempts, sessionStartRoute, studySession]);
 
   useEffect(() => {
     const syncVisibility = () => {
@@ -531,6 +572,12 @@ export default function Home() {
     if (firstConcept) setSelectedConceptId(firstConcept.id);
   }
 
+  function continueToNextPractice() {
+    nextPractice();
+    setSessionSummary(null);
+    setActiveTab("practice");
+  }
+
   function retryPractice() {
     setPracticeAnswer(null);
     setPracticeFeedback(null);
@@ -549,6 +596,12 @@ export default function Home() {
     setFocusRunning(true);
     studySessionRef.current = session;
     setStudySession(session);
+    writeStored(storageKeys.studySession, JSON.stringify({
+      session,
+      focusTotalSeconds: seconds,
+      sessionStartAttempts: totalAttempts,
+      sessionStartRoute: routeTouchedCount,
+    } satisfies StoredStudySessionEnvelope));
     setFocusOpen(false);
   }
 
@@ -762,9 +815,11 @@ export default function Home() {
     setAwaySeconds(0);
     setGuideSeen({});
     setSessionSummary(null);
+    setSessionEvidence(null);
     studySessionRef.current = null;
     setStudySession(null);
     setFocusRunning(false);
+    setFocusSeconds(0);
     setMockActive(false);
     setMockIndex(0);
     setMockAnswers({});
@@ -809,16 +864,16 @@ export default function Home() {
 
         <div className="section-heading"><div><p className="eyebrow">YOUR SIGNALS</p><h3>学習の現在地</h3></div><span className="quiet-label">端末内に保存</span></div>
         <section className="metric-grid">
-          <article className="metric-card"><span className="metric-label">共テルート</span><strong>{routeProgress}<small>%</small></strong><div className="mini-bar"><i style={{ width: `${routeProgress}%` }} /></div><p>{routeTouchedCount} / {commonTestConcepts.length}概念に触れた</p></article>
-          <article className="metric-card"><span className="metric-label">学習貯金</span><strong>{studyProgress.studiedHours.toFixed(1)}<small> / 700h</small></strong><div className="mini-bar"><i style={{ width: `${Math.min(100, studyProgress.percent)}%` }} /></div><p>{liveAwaySeconds ? `${formatTime(liveAwaySeconds)} はスマホを置いた` : "タイマーで証拠を残そう"}</p></article>
-          <article className="metric-card"><span className="metric-label">標準到達</span><strong>{learnedCount}<small> / {commonTestConcepts.length}</small></strong><div className="mini-bar"><i style={{ width: `${(learnedCount / commonTestConcepts.length) * 100}%` }} /></div><p>{availableConceptCount}概念に演習あり</p></article>
-          <article className="metric-card"><span className="metric-label">今日の証拠</span><strong>{totalAttempts}<small>問</small></strong><div className="streak-dots">{[0, 1, 2, 3, 4, 5, 6].map((day) => <i className={day < streak ? "active" : ""} key={day} />)}</div><p>{totalAttempts ? `${totalCorrect}問正解・${studyDates.length}日記録` : "最初の1問で記録"}</p></article>
+          <article className="metric-card"><span className="metric-label">共テルート</span><strong>{routeProgress}<small>%</small></strong><div className="mini-bar" role="progressbar" aria-label="共テ学習ルート" aria-valuemin={0} aria-valuemax={100} aria-valuenow={routeProgress}><i style={{ width: `${routeProgress}%` }} /></div><p>{routeTouchedCount} / {commonTestConcepts.length}概念に触れた</p></article>
+          <article className="metric-card"><span className="metric-label">学習貯金</span><strong>{formatStudyAmount(liveStudySeconds)}<small> / 700h</small></strong><div className="mini-bar" role="progressbar" aria-label="700時間トラック" aria-valuemin={0} aria-valuemax={100} aria-valuenow={studyProgress.percent}><i style={{ width: `${Math.min(100, studyProgress.percent)}%` }} /></div><p>{liveAwaySeconds ? `${formatTime(liveAwaySeconds)} はスマホを置いた` : "タイマーで証拠を残そう"}</p></article>
+          <article className="metric-card"><span className="metric-label">標準到達</span><strong>{learnedCount}<small> / {commonTestConcepts.length}</small></strong><div className="mini-bar" role="progressbar" aria-label="標準到達" aria-valuemin={0} aria-valuemax={100} aria-valuenow={(learnedCount / commonTestConcepts.length) * 100}><i style={{ width: `${(learnedCount / commonTestConcepts.length) * 100}%` }} /></div><p>{availableConceptCount}概念に演習あり</p></article>
+          <article className="metric-card"><span className="metric-label">累計の証拠</span><strong>{totalAttempts}<small>問</small></strong><div className="streak-dots">{[0, 1, 2, 3, 4, 5, 6].map((day) => <i className={day < streak ? "active" : ""} key={day} />)}</div><p>{totalAttempts ? `${totalCorrect}問正解・${studyDates.length}日記録` : "最初の1問で記録"}</p></article>
         </section>
 
         <section className="study-progress-card panel-card">
           <div className="study-progress-heading"><div><p className="eyebrow accent">YOUR 700-HOUR TRACK</p><h3>「勉強した感」を、積み上げで見える化</h3><p>集中タイマーの正味時間だけを記録。画面を閉じた時間は水増ししない。</p></div><strong>{studyProgress.percent.toFixed(studyProgress.percent < 10 ? 1 : 0)}<small>%</small></strong></div>
-          <div className="study-progress-bar" aria-label={`700時間中${studyProgress.studiedHours.toFixed(1)}時間、${studyProgress.percent.toFixed(1)}パーセント`}><i style={{ width: `${studyProgress.percent}%` }} /></div>
-          <div className="study-progress-foot"><span>{studyProgress.studiedHours.toFixed(1)} / 700時間</span><span>{milestoneRemainingSeconds ? `次の節目まで ${formatTime(milestoneRemainingSeconds)}` : "700時間の節目を達成"}</span></div>
+          <div className="study-progress-bar" role="progressbar" aria-label={`700時間中${studyProgress.studiedHours.toFixed(1)}時間、${studyProgress.percent.toFixed(1)}パーセント`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={studyProgress.percent}><i style={{ width: `${studyProgress.percent}%` }} /></div>
+          <div className="study-progress-foot"><span>{formatStudyAmount(liveStudySeconds)} / 700時間</span><span>{milestoneRemainingSeconds ? `次の節目まで ${formatTime(milestoneRemainingSeconds)}` : "700時間の節目を達成"}</span></div>
         </section>
 
         <section className="focus-strip panel-card"><div><p className="eyebrow accent">{focusRunning ? "LEARNING NOW" : "FOCUS MODE"}</p><h3>{focusRunning ? `計測中 ${formatTime(focusSeconds)}` : "短く集中して、記録を残す"}</h3><p>{focusRunning ? "画面を閉じても復帰できます。STOPしたときだけ、学習の証拠を確定します。" : "時間を決めなくてもSTART。戻ってきたら、学習時間とスマホを置いた時間が残ります。"}</p></div><button className="button button-secondary" onClick={() => setFocusOpen(true)}>{focusRunning ? "タイマーを見る" : "START"} <span>↗</span></button></section>
@@ -909,7 +964,7 @@ export default function Home() {
       <div className="workspace"><nav className="sidebar" aria-label="メインナビゲーション">{tabItems.map((item) => <button className={`nav-item ${activeTab === item.id ? "active" : ""}`} type="button" aria-current={activeTab === item.id ? "page" : undefined} key={item.id} onClick={() => setActiveTab(item.id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span>{item.label}</span>{item.id === "practice" && totalAttempts > 0 && <i className="nav-dot" aria-hidden="true" />}</button>)}<div className="sidebar-bottom"><p>教材バンク</p><strong>{problemBank.length}</strong><span>問題 / {Object.keys(conceptGuides).length}ガイド</span></div></nav><section className="main-content">{activeTab === "today" && renderToday()}{activeTab === "map" && renderMap()}{activeTab === "practice" && renderPractice()}{activeTab === "mock" && renderMock()}{activeTab === "settings" && renderSettings()}</section></div>
       {focusRunning && <button className="focus-running" type="button" aria-label={`集中タイマー ${formatTime(focusSeconds)}。詳細を開く`} onClick={() => setFocusOpen(true)}><span className="pulse-dot" />FOCUS <strong>{formatTime(focusSeconds)}</strong></button>}
       {focusOpen && <div className="modal-backdrop" role="presentation"><section ref={focusModalRef} className="focus-modal" role="dialog" aria-modal="true" aria-labelledby="focus-title" aria-describedby="focus-description"><button ref={modalCloseRef} className="modal-close" type="button" onClick={() => setFocusOpen(false)} aria-label="閉じる">×</button><p className="eyebrow accent">FOCUS MODE</p>{focusRunning ? <><h2 id="focus-title">計測中。画面は閉じてOK。</h2><p id="focus-description">STOPするまで自動終了しません。画面を離れた時間は別に記録します。</p><div className="focus-live"><strong>{formatTime(focusSeconds)}</strong><span>経過時間</span><small>{studySession ? `スマホを置いた時間 ${formatTime(sessionAwaySeconds(studySession, currentTime()))}` : ""}</small></div><div className="hero-actions"><button className="button button-secondary" type="button" onClick={() => setFocusOpen(false)}>戻る</button><button className="button button-danger" type="button" onClick={stopFocus}>STOPして記録</button></div></> : <><h2 id="focus-title">まずSTART。時間は自由。</h2><p id="focus-description">10・20・40分は目安です。選ばなくても始められ、STOPしたときだけ今日の証拠になります。</p><div className="duration-grid">{[10, 20, 40].map((minutes) => <button key={minutes} type="button" className={`duration-button ${focusTotalSeconds === minutes * 60 ? "selected" : ""}`} onClick={() => { setFocusTotalSeconds(minutes * 60); setFocusSeconds(0); }}><strong>{minutes}</strong><span>min 目安</span></button>)}</div><div className="focus-noise"><div><strong>ピンクノイズ</strong><span>{noiseOn ? "再生中" : "オフ"}</span></div><button className="toggle-button" type="button" aria-pressed={noiseOn} onClick={toggleNoise}><span className={noiseOn ? "toggle-knob on" : "toggle-knob"} /><span>{noiseOn ? "On" : "Off"}</span></button></div><button className="button button-primary wide" type="button" onClick={beginFocus}>STARTする <span>→</span></button></>}</section></div>}
-      {sessionSummary && <div className="modal-backdrop" role="presentation"><section ref={summaryModalRef} className="summary-modal" role="dialog" aria-modal="true" aria-labelledby="summary-title" aria-describedby="summary-description"><button ref={summaryCloseRef} className="modal-close" type="button" onClick={() => setSessionSummary(null)} aria-label="閉じる">×</button><p className="eyebrow accent">SESSION COMPLETE</p><h2 id="summary-title">積み上げを記録した。</h2><p id="summary-description">今日は画面を見ていた時間ではなく、正味の集中時間だけを進捗に加えました。</p><div className="summary-numbers"><div><strong>{formatTime(sessionSummary.studySeconds)}</strong><span>正味集中</span></div><div><strong>{formatTime(sessionSummary.awaySeconds)}</strong><span>スマホを置いた時間</span></div></div>{sessionEvidence && <div className="session-evidence"><div><strong>{sessionEvidence.questions}</strong><span>解いた問題</span></div><div><strong>{Math.max(0, sessionEvidence.routeEnd - sessionEvidence.routeStart)}</strong><span>進んだ概念</span></div><div><strong>{sessionEvidence.routeStart} → {sessionEvidence.routeEnd}</strong><span>ルート</span></div></div>}<p className="summary-reassurance">進捗は戻りません。次は1問だけでOK。</p><button className="button button-primary wide" type="button" onClick={() => { setSessionSummary(null); setActiveTab("practice"); }}>次の1問へ <span>→</span></button></section></div>}
+      {sessionSummary && <div className="modal-backdrop" role="presentation"><section ref={summaryModalRef} className="summary-modal" role="dialog" aria-modal="true" aria-labelledby="summary-title" aria-describedby="summary-description"><button ref={summaryCloseRef} className="modal-close" type="button" onClick={() => setSessionSummary(null)} aria-label="閉じる">×</button><p className="eyebrow accent">SESSION COMPLETE</p><h2 id="summary-title">積み上げを記録した。</h2><p id="summary-description">今日は画面を見ていた時間ではなく、正味の集中時間だけを進捗に加えました。</p><div className="summary-numbers"><div><strong>{formatTime(sessionSummary.studySeconds)}</strong><span>正味集中</span></div><div><strong>{formatTime(sessionSummary.awaySeconds)}</strong><span>スマホを置いた時間</span></div></div>{sessionEvidence && <div className="session-evidence"><div><strong>{sessionEvidence.questions}</strong><span>解いた問題</span></div><div><strong>{Math.max(0, sessionEvidence.routeEnd - sessionEvidence.routeStart)}</strong><span>進んだ概念</span></div><div><strong>{sessionEvidence.routeStart} → {sessionEvidence.routeEnd}</strong><span>ルート</span></div></div>}<p className="summary-reassurance">進捗は戻りません。次は1問だけでOK。</p><button className="button button-primary wide" type="button" onClick={continueToNextPractice}>次の1問へ <span>→</span></button></section></div>}
       {setupOpen && <div className="modal-backdrop" role="presentation"><section ref={setupModalRef} className="setup-modal" role="dialog" aria-modal="true" aria-labelledby="setup-title" aria-describedby="setup-description"><div className="setup-mark">Σ</div><p className="eyebrow accent">YOUR STARTING POINT</p><h2 id="setup-title">数学を、概念からつなぐ。</h2><p id="setup-description">320の概念を依存順に並べ、毎日の「次の一手」だけを出します。まずは今の状態に近い入口を選んでください。</p><div className="setup-actions"><button ref={setupPrimaryRef} className="setup-choice primary" type="button" onClick={skipFoundation}><span><strong>数学I「数と式」から始める</strong><small>橋渡しを確認済みとして、I-01から始める</small></span><b>→</b></button><button className="setup-choice" type="button" onClick={startDiagnostic}><span><strong>橋渡しから1問ずつ始める</strong><small>F-01から解き、回答に合わせて次の入口を選ぶ</small></span><b>→</b></button></div><small className="setup-note">あとから設定で記録を消去できます。</small></section></div>}
     </main>
   );
