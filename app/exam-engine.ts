@@ -454,9 +454,11 @@ export function normalizeExamSession(value: unknown, nowMs = Date.now()): ExamSe
   const startedAt = isValidIsoDate(value.startedAt) ? Date.parse(value.startedAt) : Number.NaN;
   const deadlineAt = isValidIsoDate(value.deadlineAt) ? Date.parse(value.deadlineAt) : Number.NaN;
   const submittedAt = typeof value.submittedAt === "string" && isValidIsoDate(value.submittedAt) ? Date.parse(value.submittedAt) : Number.NaN;
-  const safeNow = Number.isFinite(nowMs) ? nowMs : Number.POSITIVE_INFINITY;
+  const safeNow = Number.isFinite(nowMs) ? nowMs : Date.now();
   const formIdPattern = value.paper === "math1a" ? /^IA-F[1-3]$/ : value.paper === "math2bc" ? /^IIBC-F[1-3]$/ : /^MATH3-F[1-3]$/;
-  if (!formIdPattern.test(value.formId) || !Number.isFinite(startedAt) || !Number.isFinite(deadlineAt) || deadlineAt <= startedAt || startedAt > safeNow) return undefined;
+  if (!formIdPattern.test(value.formId) || !Number.isFinite(startedAt) || !Number.isFinite(deadlineAt)
+    || deadlineAt - startedAt !== EXAM_CONFIG[value.paper].durationSeconds * 1000
+    || deadlineAt <= startedAt || startedAt > safeNow) return undefined;
   if (value.active === value.finished) return undefined;
   if (value.finished && (!Number.isFinite(submittedAt) || submittedAt < startedAt || submittedAt > safeNow)) return undefined;
   const knownOptionalIds = value.paper === "math2bc" ? new Set(["IIBC-02", "IIBC-03", "IIBC-04", "IIBC-05"]) : new Set<string>();
@@ -519,11 +521,7 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
     const expectedSectionPoints: Record<string, number> = entry.paper === "math2bc"
       ? Object.fromEntries(expectedSectionIds.map((id) => [id, id === "IIBC-01" ? 40 : 20]))
       : Object.fromEntries(expectedSectionIds.map((id) => [id, 25]));
-    const questionResults = isRecord(entry.questionResults) ? entry.questionResults : null;
     const expectedQuestionIds = expectedSectionIds.flatMap((sectionId) => Array.from({ length: sectionCounts[sectionId] }, (_, index) => `${entry.formId}-${sectionId}-${String(index + 1).padStart(2, "0")}`));
-    if (!questionResults || Object.keys(questionResults).length !== expectedQuestionIds.length
-      || expectedQuestionIds.some((id) => !Object.prototype.hasOwnProperty.call(questionResults, id))) return false;
-    const derivedUnansweredIds = expectedQuestionIds.filter((id) => questionResults[id] === "unanswered");
     const validQuestionId = (id: unknown) => {
       if (typeof id !== "string" || !id.startsWith(`${entry.formId}-`)) return false;
       const suffix = id.slice(`${entry.formId}-`.length);
@@ -535,6 +533,44 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
       return Boolean(sectionId && /^0\d$/.test(questionNumberText) && expectedSectionIds.includes(sectionId)
         && Number.isInteger(questionNumber) && questionNumber >= 1 && questionNumber <= sectionCounts[sectionId]);
     };
+    let questionResults: Record<string, unknown> | undefined = isRecord(entry.questionResults) ? entry.questionResults : undefined;
+    if (!questionResults) {
+      // Before questionResults was added, an export still contained the
+      // section score and unanswered IDs. Reconstruct a deterministic ledger
+      // so old progress survives the format upgrade, then validate it below
+      // with the same strict rules as current exports.
+      if (!Array.isArray(entry.unanswered) || !isRecord(entry.bySection)) return false;
+      const legacyResults: Record<string, "correct" | "wrong" | "unanswered"> = {};
+      for (const sectionId of expectedSectionIds) {
+        const rawSection = entry.bySection[sectionId];
+        if (!isRecord(rawSection)) return false;
+        const points = typeof rawSection.points === "number" ? rawSection.points : Number.NaN;
+        const sectionMark = typeof rawSection.score === "number" ? rawSection.score : Number.NaN;
+        const unanswered = typeof rawSection.unanswered === "number" ? rawSection.unanswered : Number.NaN;
+        const questionPoints = expectedSectionPoints[sectionId] / sectionCounts[sectionId];
+        const sectionQuestionIds = expectedQuestionIds.filter((id) => id.startsWith(`${entry.formId}-${sectionId}-`));
+        const unansweredIds = entry.unanswered.filter((id) => typeof id === "string" && id.startsWith(`${entry.formId}-${sectionId}-`));
+        if (!Number.isSafeInteger(points) || points !== expectedSectionPoints[sectionId]
+          || !Number.isSafeInteger(sectionMark) || sectionMark < 0 || sectionMark > points || sectionMark % questionPoints !== 0
+          || !Number.isSafeInteger(unanswered) || unanswered !== unansweredIds.length || unanswered < 0 || unanswered > sectionCounts[sectionId]
+          || !unansweredIds.every(validQuestionId)) return false;
+        let correctRemaining = sectionMark / questionPoints;
+        const unansweredSet = new Set(unansweredIds);
+        for (const questionId of sectionQuestionIds) {
+          if (unansweredSet.has(questionId)) legacyResults[questionId] = "unanswered";
+          else if (correctRemaining > 0) {
+            legacyResults[questionId] = "correct";
+            correctRemaining -= 1;
+          } else legacyResults[questionId] = "wrong";
+        }
+        if (correctRemaining !== 0) return false;
+      }
+      entry.questionResults = legacyResults;
+      questionResults = legacyResults;
+    }
+    if (Object.keys(questionResults).length !== expectedQuestionIds.length
+      || expectedQuestionIds.some((id) => !Object.prototype.hasOwnProperty.call(questionResults, id))) return false;
+    const derivedUnansweredIds = expectedQuestionIds.filter((id) => questionResults[id] === "unanswered");
     if (!Number.isSafeInteger(score) || score < 0 || score > totalPoints || entry.totalPoints !== totalPoints
       || !Number.isSafeInteger(percentage) || percentage < 0 || percentage > 100 || percentage !== Math.round((score / totalPoints) * 100)
       || !Number.isSafeInteger(elapsedSeconds) || elapsedSeconds < 0 || elapsedSeconds > EXAM_CONFIG[entry.paper].durationSeconds

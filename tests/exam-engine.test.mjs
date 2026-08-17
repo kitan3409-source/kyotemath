@@ -101,6 +101,11 @@ test("exam normalizers reject unknown forms, zero-length sessions, and fake unan
   const submittedAt = new Date(Date.now() - 30_000).toISOString();
   const result = scoreExam(form, {}, [], startedAt, submittedAt, false);
   assert.equal(normalizeExamHistory([result]).length, 1);
+  const legacyResult = { ...result };
+  delete legacyResult.questionResults;
+  const migratedLegacy = normalizeExamHistory([legacyResult]);
+  assert.equal(migratedLegacy.length, 1);
+  assert.equal(Object.keys(migratedLegacy[0].questionResults).length, examQuestions(form).length);
   assert.equal(normalizeExamHistory([{ ...result, unanswered: [`${form.id}-fake`] }]).length, 0);
 });
 
