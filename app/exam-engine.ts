@@ -501,6 +501,13 @@ export function normalizeExamHistory(value: unknown): ExamResult[] {
       || !Array.isArray(entry.unanswered) || new Set(entry.unanswered).size !== entry.unanswered.length
       || !entry.unanswered.every((id) => typeof id === "string" && id.startsWith(`${entry.formId}-`))
       || !isRecord(entry.bySection)) return false;
+    const expectedSectionIds = entry.paper === "math1a"
+      ? ["IA-01", "IA-02", "IA-03", "IA-04"]
+      : entry.paper === "math2bc"
+        ? ["IIBC-01", ...selectedIds]
+        : ["M3-01", "M3-02", "M3-03", "M3-04"];
+    const actualSectionIds = Object.keys(entry.bySection);
+    if (actualSectionIds.length !== expectedSectionIds.length || !expectedSectionIds.every((id) => actualSectionIds.includes(id))) return false;
     let sectionPoints = 0;
     let sectionScore = 0;
     let sectionUnanswered = 0;

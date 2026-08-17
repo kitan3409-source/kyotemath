@@ -261,7 +261,9 @@ export function isStudySessionState(value: unknown, nowMs = Date.now()): value i
     && value.startedAtMs <= safeNow
     && value.lastAccountedAtMs <= safeNow
     && isNonNegativeSafeInteger(value.activeMilliseconds)
-    && isNonNegativeSafeInteger(value.awayMilliseconds);
+    && isNonNegativeSafeInteger(value.awayMilliseconds)
+    && value.activeMilliseconds <= value.lastAccountedAtMs - value.startedAtMs
+    && value.awayMilliseconds <= value.lastAccountedAtMs - value.startedAtMs - value.activeMilliseconds;
 }
 
 /** Return a clean immutable copy of persisted JSON, or null when it is invalid. */

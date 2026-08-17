@@ -59,6 +59,7 @@ const LOCAL_KEYS = {
 let writeQueue = Promise.resolve();
 const WRITE_LOCK_KEY = "kyote-math-60:write-lock";
 const instanceId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const tabOpenedAtMs = Date.now();
 let localClearAt: string | undefined;
 
 function validTime(value: unknown): value is string {
@@ -80,6 +81,7 @@ function parseStoredJson(raw: string | null, fallback: unknown) {
 
 export function normalizeProgress(value: unknown): PersistedProgress | null {
   if (!isRecord(value) || !isRecord(value.mastery) || !isRecord(value.attempts)) return null;
+  const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(new Date());
   const mastery: Record<string, number> = {};
   for (const [id, rawLevel] of Object.entries(value.mastery)) {
     if (typeof rawLevel === "number" && Number.isFinite(rawLevel)) mastery[id] = Math.min(4, Math.max(0, Math.round(rawLevel)));
@@ -107,7 +109,7 @@ export function normalizeProgress(value: unknown): PersistedProgress | null {
     attempts[id] = { correct: Math.min(correct, total), total, lastAt, dueAt, streak, lastErrorCause, retry, evidence };
   }
   const studyDates = Array.isArray(value.studyDates)
-    ? value.studyDates.filter((date): date is string => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date) && isValidIsoDate(date))
+    ? value.studyDates.filter((date): date is string => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date) && isValidIsoDate(date) && date <= today)
     : [];
   const studySeconds = typeof value.studySeconds === "number" && Number.isFinite(value.studySeconds) ? Math.max(0, Math.floor(value.studySeconds)) : 0;
   const awaySeconds = typeof value.awaySeconds === "number" && Number.isFinite(value.awaySeconds) ? Math.max(0, Math.floor(value.awaySeconds)) : 0;
@@ -304,7 +306,15 @@ async function persistProgress(progress: PersistedProgress) {
   const databaseProgress = await readDatabaseProgress();
   const current = localProgress && databaseProgress ? mergeProgress(localProgress, databaseProgress) : localProgress ?? databaseProgress;
   const ownsReset = Boolean(current?.clearedAt && (current.clearedAt === localClearAt || (() => {
-    try { return window.sessionStorage.getItem(RESET_SESSION_KEY) === current.clearedAt; } catch { return false; }
+    try {
+      if (window.sessionStorage.getItem(RESET_SESSION_KEY) === current.clearedAt) return true;
+      const clearedAtMs = Date.parse(current.clearedAt);
+      if (Number.isFinite(clearedAtMs) && clearedAtMs <= tabOpenedAtMs) {
+        window.sessionStorage.setItem(RESET_SESSION_KEY, current.clearedAt);
+        return true;
+      }
+      return false;
+    } catch { return false; }
   })()));
   // A tab that existed before reset must not be allowed to write its stale
   // snapshot back with a fresh wall-clock timestamp. The tab that performed
