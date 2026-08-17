@@ -266,9 +266,8 @@ async function withWriteLock<T>(task: () => Promise<T>): Promise<T> {
     if (lockManager) return lockManager.request("kyote-math-60-progress", { mode: "exclusive" }, task);
   }
   let token = "";
-  const deadline = Date.now() + 2000;
   try {
-    while (Date.now() < deadline) {
+    while (!token) {
       token = `${instanceId}:${Date.now()}`;
       const existing = window.localStorage.getItem(WRITE_LOCK_KEY);
       const existingAt = existing ? Number(existing.split(":").at(-1)) : 0;
@@ -276,16 +275,33 @@ async function withWriteLock<T>(task: () => Promise<T>): Promise<T> {
         window.localStorage.setItem(WRITE_LOCK_KEY, token);
         if (window.localStorage.getItem(WRITE_LOCK_KEY) === token) break;
       }
+      token = "";
       await wait(30);
     }
-    return await task();
   } catch {
     // Some browsers expose localStorage but reject access in private or
     // restricted contexts. The IndexedDB/local in-memory fallbacks still work.
     return await task();
-  } finally {
+  }
+  const owner = `${instanceId}:`;
+  const heartbeat = window.setInterval(() => {
     try {
-      if (token && window.localStorage.getItem(WRITE_LOCK_KEY) === token) window.localStorage.removeItem(WRITE_LOCK_KEY);
+      if (window.localStorage.getItem(WRITE_LOCK_KEY)?.startsWith(owner)) {
+        const refreshed = `${owner}${Date.now()}`;
+        window.localStorage.setItem(WRITE_LOCK_KEY, refreshed);
+        if (window.localStorage.getItem(WRITE_LOCK_KEY) === refreshed) token = refreshed;
+      }
+    } catch {
+      // The in-flight task still completes; another tab can recover the lock
+      // after the last successful heartbeat becomes stale.
+    }
+  }, 500);
+  try {
+    return await task();
+  } finally {
+    window.clearInterval(heartbeat);
+    try {
+      if (window.localStorage.getItem(WRITE_LOCK_KEY) === token) window.localStorage.removeItem(WRITE_LOCK_KEY);
     } catch {
       // Nothing to release when storage access is unavailable.
     }

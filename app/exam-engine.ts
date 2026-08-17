@@ -441,7 +441,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function normalizeExamSession(value: unknown, nowMs = Number.POSITIVE_INFINITY): ExamSession | undefined {
+export function normalizeExamSession(value: unknown, nowMs = Date.now()): ExamSession | undefined {
   if (!isRecord(value) || typeof value.formId !== "string" || (value.paper !== "math1a" && value.paper !== "math2bc" && value.paper !== "math3") || typeof value.active !== "boolean" || typeof value.finished !== "boolean" || !isRecord(value.answers) || !Array.isArray(value.selectedOptionalSectionIds) || typeof value.startedAt !== "string" || typeof value.deadlineAt !== "string") return undefined;
   const answers: Record<string, number> = {};
   for (const [id, answer] of Object.entries(value.answers)) if (typeof answer === "number" && Number.isSafeInteger(answer) && answer >= 0 && answer < 4) answers[id] = answer;
@@ -454,7 +454,11 @@ export function normalizeExamSession(value: unknown, nowMs = Number.POSITIVE_INF
   if (value.active === value.finished) return undefined;
   if (value.finished && (!Number.isFinite(submittedAt) || submittedAt < startedAt || submittedAt > safeNow)) return undefined;
   const knownOptionalIds = value.paper === "math2bc" ? new Set(["IIBC-02", "IIBC-03", "IIBC-04", "IIBC-05"]) : new Set<string>();
-  const selectedOptionalSectionIds = [...new Set(value.selectedOptionalSectionIds.filter((id): id is string => typeof id === "string" && knownOptionalIds.has(id)))].slice(0, 3);
+  const rawSelectedOptionalSectionIds = value.selectedOptionalSectionIds;
+  const selectedOptionalSectionIds = rawSelectedOptionalSectionIds.filter((id): id is string => typeof id === "string");
+  if (selectedOptionalSectionIds.length !== rawSelectedOptionalSectionIds.length
+    || new Set(selectedOptionalSectionIds).size !== selectedOptionalSectionIds.length
+    || selectedOptionalSectionIds.some((id) => !knownOptionalIds.has(id))) return undefined;
   if ((value.paper === "math1a" || value.paper === "math3") && selectedOptionalSectionIds.length > 0) return undefined;
   if (value.paper === "math2bc" && selectedOptionalSectionIds.length !== 3) return undefined;
   return {
@@ -504,6 +508,9 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
       : entry.paper === "math2bc"
         ? Object.fromEntries(expectedSectionIds.map((id) => [id, id === "IIBC-01" ? 4 : 2]))
         : { "M3-01": 5, "M3-02": 5, "M3-03": 5, "M3-04": 5 };
+    const expectedSectionPoints: Record<string, number> = entry.paper === "math2bc"
+      ? Object.fromEntries(expectedSectionIds.map((id) => [id, id === "IIBC-01" ? 40 : 20]))
+      : Object.fromEntries(expectedSectionIds.map((id) => [id, 25]));
     const validQuestionId = (id: unknown) => {
       if (typeof id !== "string" || !id.startsWith(`${entry.formId}-`)) return false;
       const suffix = id.slice(`${entry.formId}-`.length);
@@ -532,7 +539,12 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
       const points = typeof rawSection.points === "number" ? rawSection.points : Number.NaN;
       const sectionMark = typeof rawSection.score === "number" ? rawSection.score : Number.NaN;
       const unanswered = typeof rawSection.unanswered === "number" ? rawSection.unanswered : Number.NaN;
-      if (!Number.isSafeInteger(points) || points <= 0 || !Number.isSafeInteger(sectionMark) || sectionMark < 0 || sectionMark > points || !Number.isSafeInteger(unanswered) || unanswered < 0) return false;
+      if (!Number.isSafeInteger(points) || points !== expectedSectionPoints[sectionId]
+        || !Number.isSafeInteger(sectionMark) || sectionMark < 0 || sectionMark > points
+        || sectionMark % (points / sectionCounts[sectionId]) !== 0
+        || !Number.isSafeInteger(unanswered) || unanswered < 0 || unanswered > sectionCounts[sectionId]) return false;
+      const unansweredIdsInSection = entry.unanswered.filter((id) => typeof id === "string" && id.startsWith(`${entry.formId}-${sectionId}-`)).length;
+      if (unanswered !== unansweredIdsInSection || sectionMark > (sectionCounts[sectionId] - unanswered) * (points / sectionCounts[sectionId])) return false;
       sectionPoints += points;
       sectionScore += sectionMark;
       sectionUnanswered += unanswered;

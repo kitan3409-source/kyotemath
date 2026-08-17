@@ -78,16 +78,17 @@ test("session normalization and timeout keep the exam resumable", () => {
   assert.equal(session.selectedOptionalSectionIds.length, 3);
   assert.equal(isExamExpired(session, new Date(now.getTime() + form.durationSeconds * 1000 - 1)), false);
   assert.equal(isExamExpired(session, new Date(now.getTime() + form.durationSeconds * 1000)), true);
-  assert.deepEqual(normalizeExamSession({ ...session, index: 4, answers: { [examQuestions(form)[0].id]: 1 } })?.index, 4);
+  assert.deepEqual(normalizeExamSession({ ...session, index: 4, answers: { [examQuestions(form)[0].id]: 1 } }, now.getTime())?.index, 4);
 });
 
 test("exam sessions reject malformed deadlines and duplicate or unknown optional fields", () => {
   const form = buildExamForms(syntheticBank())[3];
   const session = createExamSession(form, new Date("2026-08-18T00:00:00.000Z"), ["IIBC-02", "IIBC-03", "IIBC-04"]);
-  assert.equal(normalizeExamSession({ ...session, deadlineAt: "not-a-date" }), undefined);
-  assert.equal(normalizeExamSession({ ...session, selectedOptionalSectionIds: ["IIBC-02", "IIBC-02", "unknown", "IIBC-03", "IIBC-04"] })?.selectedOptionalSectionIds.length, 3);
-  assert.equal(normalizeExamSession({ ...session, selectedOptionalSectionIds: ["IIBC-02", "IIBC-03"] }), undefined);
-  assert.equal(normalizeExamSession({ ...session, paper: "math1a", selectedOptionalSectionIds: ["IIBC-02", "IIBC-03", "IIBC-04"] }), undefined);
+  const nowMs = Date.parse(session.startedAt);
+  assert.equal(normalizeExamSession({ ...session, deadlineAt: "not-a-date" }, nowMs), undefined);
+  assert.equal(normalizeExamSession({ ...session, selectedOptionalSectionIds: ["IIBC-02", "IIBC-02", "unknown", "IIBC-03", "IIBC-04"] }, Date.parse(session.startedAt)), undefined);
+  assert.equal(normalizeExamSession({ ...session, selectedOptionalSectionIds: ["IIBC-02", "IIBC-03"] }, nowMs), undefined);
+  assert.equal(normalizeExamSession({ ...session, paper: "math1a", selectedOptionalSectionIds: ["IIBC-02", "IIBC-03", "IIBC-04"] }, nowMs), undefined);
 });
 
 test("exam normalizers reject unknown forms, zero-length sessions, and fake unanswered IDs", () => {
@@ -101,6 +102,21 @@ test("exam normalizers reject unknown forms, zero-length sessions, and fake unan
   const result = scoreExam(form, {}, [], startedAt, submittedAt, false);
   assert.equal(normalizeExamHistory([result]).length, 1);
   assert.equal(normalizeExamHistory([{ ...result, unanswered: [`${form.id}-fake`] }]).length, 0);
+});
+
+test("exam normalizers reject future sessions and section-level history tampering", () => {
+  const form = buildExamForms(syntheticBank())[0];
+  const futureStart = new Date(Date.now() + 60_000);
+  const futureSession = createExamSession(form, futureStart);
+  assert.equal(normalizeExamSession(futureSession), undefined);
+
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  const submittedAt = new Date(Date.now() - 30_000).toISOString();
+  const result = scoreExam(form, {}, [], startedAt, submittedAt, false);
+  const shiftedPoints = { ...result, bySection: { ...result.bySection, "IA-01": { ...result.bySection["IA-01"], points: 24 }, "IA-02": { ...result.bySection["IA-02"], points: 26 } } };
+  assert.equal(normalizeExamHistory([shiftedPoints]).length, 0);
+  const shiftedUnanswered = { ...result, bySection: { ...result.bySection, "IA-01": { ...result.bySection["IA-01"], unanswered: 10 }, "IA-02": { ...result.bySection["IA-02"], unanswered: 0 } } };
+  assert.equal(normalizeExamHistory([shiftedUnanswered]).length, 0);
 });
 
 test("induction is visible in follow-up prompts and option selection is not duplicated", () => {

@@ -153,6 +153,8 @@ function sanitizePracticeResume(
   if (!practice?.active) return practice;
   const problem = problemById.get(practice.problemId);
   if (!problem) return undefined;
+  const concept = conceptById.get(practice.conceptId);
+  if (!concept || !concept.requires.every((id) => isMasteryComplete(sourceMastery[id]))) return undefined;
   const level = sourceMastery[practice.conceptId] ?? 0;
   const dueAt = level === 3 ? effectiveDueAtForAttempt(sourceAttempts[practice.conceptId]) : undefined;
   const delayedAllowed = level === 3 && Boolean(dueAt && Date.parse(dueAt) <= Date.now());
