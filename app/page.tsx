@@ -8,7 +8,16 @@ import { bridgeGuides } from "./content/bridge-guides";
 import { lessonModules as baseLessonModules, type LessonModule } from "./content/lesson-modules";
 import { lessonModulesBatch02 } from "./content/lesson-modules-batch-02";
 import { lessonModulesBatch03 } from "./content/lesson-modules-batch-03";
+import { lessonModulesBatch04a } from "./content/lesson-modules-batch-04a";
+import { lessonModulesBatch04b } from "./content/lesson-modules-batch-04b";
+import { lessonModulesBatch05a } from "./content/lesson-modules-batch-05a";
+import { lessonModulesBatch05b } from "./content/lesson-modules-batch-05b";
 import { problemExpansionBatch01 } from "./content/problem-expansion-batch-01";
+import { problemExpansionBatch02 } from "./content/problem-expansion-batch-02";
+import { problemExpansionBatch03 } from "./content/problem-expansion-batch-03";
+import { problemExpansionBatch04 } from "./content/problem-expansion-batch-04";
+import { problemExpansionBatch05 } from "./content/problem-expansion-batch-05";
+import { problemExpansionBulk } from "./content/problem-expansion-bulk";
 import { clearProgress, loadProgress, saveProgress, type PersistedProgress } from "./storage";
 import {
   awaySeconds as sessionAwaySeconds,
@@ -48,8 +57,24 @@ function primaryConceptIdFor(problem: Problem) {
 const concepts = conceptData.concepts;
 const conceptById = new Map(concepts.map((concept) => [concept.id, concept]));
 const conceptGuides: Record<string, ConceptGuide> = { ...baseConceptGuides, ...bridgeGuides };
-const lessonModules = [...baseLessonModules, ...lessonModulesBatch02, ...lessonModulesBatch03];
-const problemBank = [...baseProblemBank, ...problemExpansionBatch01];
+const lessonModules = [
+  ...baseLessonModules,
+  ...lessonModulesBatch02,
+  ...lessonModulesBatch03,
+  ...lessonModulesBatch04a,
+  ...lessonModulesBatch04b,
+  ...lessonModulesBatch05a,
+  ...lessonModulesBatch05b,
+];
+const problemBank = [
+  ...baseProblemBank,
+  ...problemExpansionBatch01,
+  ...problemExpansionBatch02,
+  ...problemExpansionBatch03,
+  ...problemExpansionBatch04,
+  ...problemExpansionBatch05,
+  ...problemExpansionBulk,
+];
 const problemByConcept = new Map<string, Problem>();
 const problemsByConcept = new Map<string, Problem[]>();
 for (const problem of problemBank) {
@@ -1058,7 +1083,7 @@ export default function Home() {
           <article className="setting-card panel-card"><div><p className="eyebrow">IOS START</p><h3>ホーム画面に追加</h3><p>Safariの共有ボタンから「ホーム画面に追加」。追加後もオフラインで使えます。</p></div><span className="setting-hint">Safari → 共有 → 追加</span></article>
           <article className="setting-card panel-card danger-card"><div><p className="eyebrow">RESET</p><h3>最初からやり直す</h3><p>概念の到達度と正答履歴を消去する。</p></div><button className="button button-danger" type="button" onClick={resetData}>記録を消去</button></article>
         </section>
-        <section className="about-card panel-card"><div className="about-mark">Σ</div><div><p className="eyebrow">ABOUT THIS BUILD</p><h3>共テ数学60 / v0.5 · 4X BATCH 01</h3><p>高校数学 I・A・II・B・C・III を320概念に分解したローカルファーストPWA。共テ225概念と橋渡し21概念に{lessonModules.length}本の本編レッスン、{Object.keys(conceptGuides).length}件の短編ガイド、{problemBank.length}問を接続し、外部教材なしで「解説 → 例題 → 確認問題」へ進める。</p></div></section>
+        <section className="about-card panel-card"><div className="about-mark">Σ</div><div><p className="eyebrow">ABOUT THIS BUILD</p><h3>共テ数学60 / v0.6 · 4X CONTENT BUILD</h3><p>高校数学 I・A・II・B・C・III を320概念に分解したローカルファーストPWA。共テ225概念と橋渡し21概念に{lessonModules.length}本の本編レッスン、{Object.keys(conceptGuides).length}件の短編ガイド、{problemBank.length}問を接続し、外部教材なしで「解説 → 例題 → 確認問題」へ進める。</p></div></section>
       </div>
     );
   }
