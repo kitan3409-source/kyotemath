@@ -115,8 +115,13 @@ test("exam normalizers reject future sessions and section-level history tamperin
   const result = scoreExam(form, {}, [], startedAt, submittedAt, false);
   const shiftedPoints = { ...result, bySection: { ...result.bySection, "IA-01": { ...result.bySection["IA-01"], points: 24 }, "IA-02": { ...result.bySection["IA-02"], points: 26 } } };
   assert.equal(normalizeExamHistory([shiftedPoints]).length, 0);
+  const shiftedScore = { ...result, bySection: { ...result.bySection, "IA-01": { ...result.bySection["IA-01"], score: 5 }, "IA-02": { ...result.bySection["IA-02"], score: 0 } } };
+  assert.equal(normalizeExamHistory([shiftedScore]).length, 0);
   const shiftedUnanswered = { ...result, bySection: { ...result.bySection, "IA-01": { ...result.bySection["IA-01"], unanswered: 10 }, "IA-02": { ...result.bySection["IA-02"], unanswered: 0 } } };
   assert.equal(normalizeExamHistory([shiftedUnanswered]).length, 0);
+  const extraSectionField = { ...result, bySection: { ...result.bySection, "IA-01": { ...result.bySection["IA-01"], extra: 1 } } };
+  assert.equal(normalizeExamHistory([extraSectionField]).length, 0);
+  assert.equal(normalizeExamHistory([{ ...result, extra: true }]).length, 0);
 });
 
 test("induction is visible in follow-up prompts and option selection is not duplicated", () => {

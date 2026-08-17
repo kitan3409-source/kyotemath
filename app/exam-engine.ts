@@ -73,6 +73,7 @@ export type ExamResult = {
   unanswered: string[];
   elapsedSeconds: number;
   timedOut: boolean;
+  questionResults: Record<string, "correct" | "wrong" | "unanswered">;
   bySection: Record<string, { score: number; points: number; unanswered: number }>;
 };
 
@@ -401,6 +402,7 @@ export function scoreExam(form: ExamForm, answers: Record<string, number>, selec
   const selectedSections = new Set(eligibleSectionIds(form, selectedOptionalSectionIds));
   const bySection: ExamResult["bySection"] = {};
   const unanswered: string[] = [];
+  const questionResults: ExamResult["questionResults"] = {};
   let score = 0;
   for (const section of form.sections) {
     if (!selectedSections.has(section.id)) continue;
@@ -411,9 +413,13 @@ export function scoreExam(form: ExamForm, answers: Record<string, number>, selec
       const answer = answers[question.id];
       if (answer === undefined) {
         unanswered.push(question.id);
+        questionResults[question.id] = "unanswered";
         sectionUnanswered += 1;
       } else if (answer === question.answer) {
+        questionResults[question.id] = "correct";
         sectionScore += question.points;
+      } else {
+        questionResults[question.id] = "wrong";
       }
     }
     score += sectionScore;
@@ -422,7 +428,7 @@ export function scoreExam(form: ExamForm, answers: Record<string, number>, selec
   const started = Date.parse(startedAt);
   const submitted = Date.parse(submittedAt);
   const elapsedSeconds = Number.isFinite(started) && Number.isFinite(submitted) ? Math.max(0, Math.round((submitted - started) / 1000)) : 0;
-  return { formId: form.id, paper: form.paper, score, totalPoints: form.totalPoints, percentage: Math.round((score / form.totalPoints) * 100), selectedOptionalSectionIds: eligibleSectionIds(form, selectedOptionalSectionIds).filter((id) => form.optionalSectionIds.includes(id)), startedAt, submittedAt, unanswered, elapsedSeconds, timedOut, bySection };
+  return { formId: form.id, paper: form.paper, score, totalPoints: form.totalPoints, percentage: Math.round((score / form.totalPoints) * 100), selectedOptionalSectionIds: eligibleSectionIds(form, selectedOptionalSectionIds).filter((id) => form.optionalSectionIds.includes(id)), startedAt, submittedAt, unanswered, elapsedSeconds, timedOut, questionResults, bySection };
 }
 
 export function createExamSession(form: ExamForm, now = new Date(), selectedOptionalSectionIds = form.optionalSectionIds.slice(0, 3)): ExamSession {
@@ -480,6 +486,8 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
   const now = Number.isFinite(nowMs) ? nowMs : Date.now();
   return value.filter((entry): entry is ExamResult => {
     if (!isRecord(entry) || typeof entry.formId !== "string" || (entry.paper !== "math1a" && entry.paper !== "math2bc" && entry.paper !== "math3")) return false;
+    const allowedKeys = new Set(["formId", "paper", "score", "totalPoints", "percentage", "selectedOptionalSectionIds", "startedAt", "submittedAt", "unanswered", "elapsedSeconds", "timedOut", "questionResults", "bySection"]);
+    if (Object.keys(entry).some((key) => !allowedKeys.has(key))) return false;
     const startedAt = isValidIsoDate(entry.startedAt) ? Date.parse(entry.startedAt) : Number.NaN;
     const submittedAt = isValidIsoDate(entry.submittedAt) ? Date.parse(entry.submittedAt) : Number.NaN;
     const formIdPattern = entry.paper === "math1a" ? /^IA-F[1-3]$/ : entry.paper === "math2bc" ? /^IIBC-F[1-3]$/ : /^MATH3-F[1-3]$/;
@@ -511,6 +519,11 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
     const expectedSectionPoints: Record<string, number> = entry.paper === "math2bc"
       ? Object.fromEntries(expectedSectionIds.map((id) => [id, id === "IIBC-01" ? 40 : 20]))
       : Object.fromEntries(expectedSectionIds.map((id) => [id, 25]));
+    const questionResults = isRecord(entry.questionResults) ? entry.questionResults : null;
+    const expectedQuestionIds = expectedSectionIds.flatMap((sectionId) => Array.from({ length: sectionCounts[sectionId] }, (_, index) => `${entry.formId}-${sectionId}-${String(index + 1).padStart(2, "0")}`));
+    if (!questionResults || Object.keys(questionResults).length !== expectedQuestionIds.length
+      || expectedQuestionIds.some((id) => !Object.prototype.hasOwnProperty.call(questionResults, id))) return false;
+    const derivedUnansweredIds = expectedQuestionIds.filter((id) => questionResults[id] === "unanswered");
     const validQuestionId = (id: unknown) => {
       if (typeof id !== "string" || !id.startsWith(`${entry.formId}-`)) return false;
       const suffix = id.slice(`${entry.formId}-`.length);
@@ -528,6 +541,8 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
       || typeof entry.timedOut !== "boolean" || elapsedSeconds !== Math.max(0, Math.round((submittedAt - startedAt) / 1000))
       || !Array.isArray(entry.unanswered) || new Set(entry.unanswered).size !== entry.unanswered.length
       || !entry.unanswered.every(validQuestionId)
+      || entry.unanswered.length !== derivedUnansweredIds.length
+      || !entry.unanswered.every((id, index) => id === derivedUnansweredIds[index])
       || !isRecord(entry.bySection)) return false;
     const actualSectionIds = Object.keys(entry.bySection);
     if (actualSectionIds.length !== expectedSectionIds.length || !expectedSectionIds.every((id) => actualSectionIds.includes(id))) return false;
@@ -536,15 +551,26 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
     let sectionUnanswered = 0;
     for (const [sectionId, rawSection] of Object.entries(entry.bySection)) {
       if (!sectionPattern.test(sectionId) || !isRecord(rawSection)) return false;
+      const sectionKeys = Object.keys(rawSection);
+      if (sectionKeys.length !== 3 || !["score", "points", "unanswered"].every((key) => sectionKeys.includes(key))) return false;
       const points = typeof rawSection.points === "number" ? rawSection.points : Number.NaN;
       const sectionMark = typeof rawSection.score === "number" ? rawSection.score : Number.NaN;
       const unanswered = typeof rawSection.unanswered === "number" ? rawSection.unanswered : Number.NaN;
+      const questionIdsInSection = expectedQuestionIds.filter((id) => id.startsWith(`${entry.formId}-${sectionId}-`));
+      let derivedSectionScore = 0;
+      let derivedSectionUnanswered = 0;
+      for (const questionId of questionIdsInSection) {
+        const result = questionResults[questionId];
+        if (result === "correct") derivedSectionScore += points / sectionCounts[sectionId];
+        else if (result === "unanswered") derivedSectionUnanswered += 1;
+        else if (result !== "wrong") return false;
+      }
       if (!Number.isSafeInteger(points) || points !== expectedSectionPoints[sectionId]
         || !Number.isSafeInteger(sectionMark) || sectionMark < 0 || sectionMark > points
         || sectionMark % (points / sectionCounts[sectionId]) !== 0
         || !Number.isSafeInteger(unanswered) || unanswered < 0 || unanswered > sectionCounts[sectionId]) return false;
       const unansweredIdsInSection = entry.unanswered.filter((id) => typeof id === "string" && id.startsWith(`${entry.formId}-${sectionId}-`)).length;
-      if (unanswered !== unansweredIdsInSection || sectionMark > (sectionCounts[sectionId] - unanswered) * (points / sectionCounts[sectionId])) return false;
+      if (unanswered !== unansweredIdsInSection || unanswered !== derivedSectionUnanswered || sectionMark !== derivedSectionScore) return false;
       sectionPoints += points;
       sectionScore += sectionMark;
       sectionUnanswered += unanswered;
