@@ -39,11 +39,17 @@ for (const { paper, durationSeconds } of [{ paper: "math1a", durationSeconds: 42
           if (question.dependsOn.length !== 1 || question.dependsOn[0] !== previous.id) errors.push(`${form.id}/${question.id}: dependency edge is invalid`);
           if (question.linkedAnswerValue !== expected || question.options[question.answer] !== String(expected)) errors.push(`${form.id}/${question.id}: linked answer is not derived from the previous result`);
           if (!question.prompt.includes("前問の結果を使う") || !question.prompt.includes("元問題の選択肢")) errors.push(`${form.id}/${question.id}: linked prompt is not visible and solvable`);
-          const alternative = { ...correctAnswers, [section.questions[index - 1].id]: (correctAnswers[section.questions[index - 1].id] + 1) % 4 };
-          const mutated = examQuestions(form, form.optionalSectionIds.slice(0, 3), alternative).find((candidate) => candidate.id === question.id);
           const baseline = materializedCorrect.find((candidate) => candidate.id === question.id);
-          if (!mutated || !baseline || mutated.linkedAnswerValue === baseline.linkedAnswerValue) errors.push(`${form.id}/${question.id}: actual previous input does not change the follow-up`);
-          if (!mutated || !baseline || mutated.answer === baseline.answer) errors.push(`${form.id}/${question.id}: actual previous input does not change the follow-up answer position`);
+          const previousId = section.questions[index - 1].id;
+          const previousCorrect = correctAnswers[previousId];
+          for (const alternativeAnswer of [0, 1, 2, 3].filter((candidate) => candidate !== previousCorrect)) {
+            const alternative = { ...correctAnswers, [previousId]: alternativeAnswer };
+            const mutated = examQuestions(form, form.optionalSectionIds.slice(0, 3), alternative).find((candidate) => candidate.id === question.id);
+            if (!mutated || !baseline || mutated.linkedAnswerValue === baseline.linkedAnswerValue) errors.push(`${form.id}/${question.id}/choice${alternativeAnswer}: actual previous input does not change the follow-up`);
+            if (!mutated || !baseline || mutated.answer === baseline.answer) errors.push(`${form.id}/${question.id}/choice${alternativeAnswer}: actual previous input does not change the follow-up answer position`);
+            if (!mutated || !baseline || JSON.stringify(mutated.options) === JSON.stringify(baseline.options)) errors.push(`${form.id}/${question.id}/choice${alternativeAnswer}: actual previous input does not change the follow-up options`);
+            if (!mutated || !baseline || mutated.prompt === baseline.prompt || mutated.explanation === baseline.explanation) errors.push(`${form.id}/${question.id}/choice${alternativeAnswer}: actual previous input does not change visible follow-up text`);
+          }
         }
       }
     }

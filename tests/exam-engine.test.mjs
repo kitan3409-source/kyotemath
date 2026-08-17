@@ -113,4 +113,6 @@ test("follow-up questions materialize from the learner's previous answer", () =>
   assert.notEqual(changed?.linkedAnswerValue, baselineFollowUp?.linkedAnswerValue);
   assert.notDeepEqual(changed?.options, baselineFollowUp?.options);
   assert.notEqual(changed?.answer, baselineFollowUp?.answer);
+  assert.notEqual(changed?.prompt, baselineFollowUp?.prompt);
+  assert.notEqual(changed?.explanation, baselineFollowUp?.explanation);
 });

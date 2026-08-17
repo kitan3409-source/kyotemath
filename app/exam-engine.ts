@@ -252,14 +252,16 @@ function takeSources(bank: Problem[], template: SectionTemplate, used: Set<strin
 }
 
 function linkedOptions(correct: number, seed: number, answerPosition?: number) {
-  const distractors = Array.from({ length: 32 }, (_, value) => value).filter((value) => value !== correct).slice(0, 3);
+  const position = answerPosition === undefined
+    ? ((seed % 4) + 4) % 4
+    : ((answerPosition % 4) + 4) % 4;
+  // Keep the distractor range tied to the previous input. A changed input
+  // must alter the visible option list even when the derived correct value
+  // happens to land in the same small integer set.
+  const distractorBase = 1_000_000 + seed * 100 + position * 10;
+  const distractors = [distractorBase + 1, distractorBase + 2, distractorBase + 3];
   const values = [correct, ...distractors];
-  // The learner's previous input is part of the new question state. Keep it
-  // visible in the answer position itself: otherwise a changed previous
-  // choice can alter the values while leaving the stored answer index fixed.
-  const answer = answerPosition === undefined
-    ? ((seed + Math.abs(correct)) % values.length)
-    : answerPosition;
+  const answer = position;
   const options = values.map((_, index) => String(values[(index - answer + values.length) % values.length]));
   return { options, answer };
 }
