@@ -106,6 +106,9 @@ test("exam normalizers reject unknown forms, zero-length sessions, and fake unan
   const migratedLegacy = normalizeExamHistory([legacyResult]);
   assert.equal(migratedLegacy.length, 1);
   assert.equal(Object.keys(migratedLegacy[0].questionResults).length, examQuestions(form).length);
+  for (const invalidQuestionResults of [null, [], "bad", 1]) {
+    assert.equal(normalizeExamHistory([{ ...result, questionResults: invalidQuestionResults }]).length, 0);
+  }
   assert.equal(normalizeExamHistory([{ ...result, unanswered: [`${form.id}-fake`] }]).length, 0);
 });
 

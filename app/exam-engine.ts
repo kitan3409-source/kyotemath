@@ -533,8 +533,10 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
       return Boolean(sectionId && /^0\d$/.test(questionNumberText) && expectedSectionIds.includes(sectionId)
         && Number.isInteger(questionNumber) && questionNumber >= 1 && questionNumber <= sectionCounts[sectionId]);
     };
-    let questionResults: Record<string, unknown> | undefined = isRecord(entry.questionResults) ? entry.questionResults : undefined;
-    if (!questionResults) {
+    const hasQuestionResults = Object.prototype.hasOwnProperty.call(entry, "questionResults");
+    if (hasQuestionResults && !isRecord(entry.questionResults)) return false;
+    let questionResults: Record<string, unknown> | undefined = hasQuestionResults ? entry.questionResults as Record<string, unknown> : undefined;
+    if (!hasQuestionResults) {
       // Before questionResults was added, an export still contained the
       // section score and unanswered IDs. Reconstruct a deterministic ledger
       // so old progress survives the format upgrade, then validate it below
@@ -568,9 +570,11 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
       entry.questionResults = legacyResults;
       questionResults = legacyResults;
     }
-    if (Object.keys(questionResults).length !== expectedQuestionIds.length
-      || expectedQuestionIds.some((id) => !Object.prototype.hasOwnProperty.call(questionResults, id))) return false;
-    const derivedUnansweredIds = expectedQuestionIds.filter((id) => questionResults[id] === "unanswered");
+    if (!questionResults) return false;
+    const normalizedQuestionResults = questionResults;
+    if (Object.keys(normalizedQuestionResults).length !== expectedQuestionIds.length
+      || expectedQuestionIds.some((id) => !Object.prototype.hasOwnProperty.call(normalizedQuestionResults, id))) return false;
+    const derivedUnansweredIds = expectedQuestionIds.filter((id) => normalizedQuestionResults[id] === "unanswered");
     if (!Number.isSafeInteger(score) || score < 0 || score > totalPoints || entry.totalPoints !== totalPoints
       || !Number.isSafeInteger(percentage) || percentage < 0 || percentage > 100 || percentage !== Math.round((score / totalPoints) * 100)
       || !Number.isSafeInteger(elapsedSeconds) || elapsedSeconds < 0 || elapsedSeconds > EXAM_CONFIG[entry.paper].durationSeconds
@@ -596,7 +600,7 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
       let derivedSectionScore = 0;
       let derivedSectionUnanswered = 0;
       for (const questionId of questionIdsInSection) {
-        const result = questionResults[questionId];
+        const result = normalizedQuestionResults[questionId];
         if (result === "correct") derivedSectionScore += points / sectionCounts[sectionId];
         else if (result === "unanswered") derivedSectionUnanswered += 1;
         else if (result !== "wrong") return false;
