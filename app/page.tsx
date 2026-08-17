@@ -24,6 +24,7 @@ import {
   type ErrorHistory,
   type AttemptEvidence,
   isValidIsoDate,
+  masteryLevelFromEvidence,
   type LessonStep,
   type PracticeFeedback,
   type PracticePhase,
@@ -121,17 +122,7 @@ function masteryFromAttempts(source: Record<string, Attempt>) {
         && (entry.source === "observed" || entry.source === "imported")
         && Boolean(problem?.conceptIds.includes(concept.id));
     }).slice().sort((left, right) => Date.parse(left.answeredAt) - Date.parse(right.answeredAt));
-    let level = 0;
-    let transferAt: number | undefined;
-    for (const entry of evidence) {
-      const answeredAt = Date.parse(entry.answeredAt);
-      const expected = level === 0 ? "quick" : level === 1 ? "standard" : level === 2 ? "transfer" : level === 3 ? "delayed" : "complete";
-      const matches = expected === "delayed" ? entry.kind === "transfer" && entry.delayed : expected === entry.kind && !entry.delayed;
-      if (!matches) continue;
-      if (level === 3 && transferAt !== undefined && answeredAt - transferAt < 24 * 60 * 60 * 1000) continue;
-      if (level === 2) transferAt = answeredAt;
-      level = Math.min(4, level + 1);
-    }
+    const level = masteryLevelFromEvidence(evidence);
     if (level > 0) derived[concept.id] = level;
   }
   return derived;
@@ -674,7 +665,7 @@ export default function Home() {
       .filter((concept) => {
         const dueAt = attempts[concept.id]?.dueAt;
         const due = Boolean(dueAt && Date.parse(dueAt) <= now);
-        const waitingForDelayed = (mastery[concept.id] ?? 0) === 3 && Boolean(dueAt && Date.parse(dueAt) > now);
+        const waitingForDelayed = (mastery[concept.id] ?? 0) === 3 && !(dueAt && Date.parse(dueAt) <= now);
         return isUnlocked(concept) && !waitingForDelayed && (!isRouteComplete(concept) || due) && (hasPractice(concept.id) || Boolean(conceptGuides[concept.id]));
       })
       .sort((a, b) => {
@@ -733,7 +724,7 @@ export default function Home() {
     setSelectedConceptId(concept.id);
     const level = mastery[concept.id] ?? 0;
     const dueAt = attempts[concept.id]?.dueAt;
-    const delayedWaiting = level === 3 && Boolean(dueAt && Date.parse(dueAt) > currentTime());
+    const delayedWaiting = level === 3 && !(dueAt && Date.parse(dueAt) <= currentTime());
     const problem = problemForConcept(concept.id, delayedWaiting ? 2 : level, { firstByConcept: problemByConcept, problemsByConcept, stagedProblemsByConcept });
     if (!problem) return;
     setPracticeResumeActive(true);
@@ -759,7 +750,7 @@ export default function Home() {
     const expectedStage = currentLevel === 0 ? "quick" : currentLevel === 1 ? "standard" : currentLevel === 2 ? "transfer" : currentLevel === 3 ? "delayed" : "complete";
     const isDelayed = problem.id.endsWith("-delayed");
     const dueAt = attempts[observedConceptId]?.dueAt;
-    const delayedEligible = !isDelayed || !dueAt || Date.parse(dueAt) <= Date.parse(now);
+    const delayedEligible = !isDelayed || Boolean(dueAt && Date.parse(dueAt) <= Date.parse(now));
     const stageMatches = (expectedStage === "delayed" ? isDelayed : expectedStage === problem.kind && !isDelayed) && delayedEligible;
     setAttempts((previous) => {
       const next = { ...previous };

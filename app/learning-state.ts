@@ -48,6 +48,34 @@ export type AttemptEvidence = Readonly<{
   source: "observed" | "imported";
 }>;
 
+export const DELAYED_RETEST_WAIT_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Rebuild one concept's staged mastery from chronological, correct evidence.
+ * A retry or an imported snapshot cannot skip a stage, and a delayed retest
+ * is only valid after the transfer evidence has aged through its schedule.
+ */
+export function masteryLevelFromEvidence(evidence: AttemptEvidence[]): number {
+  const ordered = evidence
+    .filter((entry) => entry.correct && Number.isFinite(Date.parse(entry.answeredAt)))
+    .slice()
+    .sort((left, right) => Date.parse(left.answeredAt) - Date.parse(right.answeredAt));
+  let level = 0;
+  let transferAt: number | undefined;
+  for (const entry of ordered) {
+    const answeredAt = Date.parse(entry.answeredAt);
+    const expected = level === 0 ? "quick" : level === 1 ? "standard" : level === 2 ? "transfer" : level === 3 ? "delayed" : "complete";
+    const matches = expected === "delayed"
+      ? entry.kind === "transfer" && entry.delayed
+      : expected === entry.kind && !entry.delayed;
+    if (!matches) continue;
+    if (level === 3 && transferAt !== undefined && answeredAt - transferAt < DELAYED_RETEST_WAIT_MS) continue;
+    if (level === 2) transferAt = answeredAt;
+    level = Math.min(4, level + 1);
+  }
+  return level;
+}
+
 export type ErrorHistory = Record<string, ErrorRecord[]>;
 
 const ERROR_CAUSES = new Set<ErrorCause>(ERROR_CAUSE_OPTIONS.map((option) => option.id));

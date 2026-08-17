@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   appendErrorRecord,
+  DELAYED_RETEST_WAIT_MS,
   isMasteryComplete,
+  masteryLevelFromEvidence,
   normalizeErrorHistory,
   normalizePracticeSnapshot,
   retryDelayHours,
@@ -14,6 +16,19 @@ test("mastery completes only after the delayed retest", () => {
   assert.equal(isMasteryComplete(2), false);
   assert.equal(isMasteryComplete(3), false);
   assert.equal(isMasteryComplete(4), true);
+});
+
+test("mastery rebuild is chronological and blocks an early delayed retest", () => {
+  const at = (offset) => new Date(Date.parse("2026-01-01T00:00:00.000Z") + offset).toISOString();
+  const quick = { problemId: "q", kind: "quick", delayed: false, correct: true, answeredAt: at(0), source: "imported" };
+  const standard = { problemId: "s", kind: "standard", delayed: false, correct: true, answeredAt: at(1000), source: "imported" };
+  const transfer = { problemId: "t", kind: "transfer", delayed: false, correct: true, answeredAt: at(2000), source: "imported" };
+  const delayed = { problemId: "d", kind: "transfer", delayed: true, correct: true, answeredAt: at(2000 + DELAYED_RETEST_WAIT_MS), source: "imported" };
+  assert.equal(masteryLevelFromEvidence([quick, standard, transfer, { ...delayed, answeredAt: at(2000 + DELAYED_RETEST_WAIT_MS - 1) }]), 3);
+  assert.equal(masteryLevelFromEvidence([quick, standard, transfer, delayed]), 4);
+  const standardTooEarly = { ...standard, answeredAt: at(0) };
+  const quickAfterStandard = { ...quick, answeredAt: at(1000) };
+  assert.equal(masteryLevelFromEvidence([standardTooEarly, quickAfterStandard, transfer, delayed]), 1);
 });
 
 test("practice snapshots keep valid resume data and reject invalid phases", () => {
