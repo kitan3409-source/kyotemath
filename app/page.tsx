@@ -311,7 +311,7 @@ export default function Home() {
           removeStored(storageKeys.studySession);
         }
         if ("serviceWorker" in navigator) {
-          navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).then((registration) => registration.update()).catch(() => undefined);
+          navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then((registration) => registration.update()).catch(() => undefined);
         }
         setHydrated(true);
       });
