@@ -36,6 +36,16 @@ for (const concept of concepts) {
   if (delayed && (delayed.kind !== "transfer" || row.includes(delayed.id) || (transfer && delayed.prompt === transfer.prompt && delayed.options.join("\u001f") === transfer.options.join("\u001f") && delayed.answer === transfer.answer))) errors.push(`${concept.id}/delayed: delayed retest is not distinct from the staged transfer`);
 }
 
+const promptOwners = new Map();
+for (const problem of problemBank) {
+  const owners = promptOwners.get(problem.prompt) ?? [];
+  owners.push(problem.id);
+  promptOwners.set(problem.prompt, owners);
+}
+for (const [prompt, owners] of promptOwners) {
+  if (owners.length > 1) errors.push(`duplicate problem prompt: ${owners.join(", ")} (${prompt})`);
+}
+
 const result = {
   ok: errors.length === 0,
   concepts: concepts.length,

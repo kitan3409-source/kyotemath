@@ -441,16 +441,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function normalizeExamSession(value: unknown): ExamSession | undefined {
+export function normalizeExamSession(value: unknown, nowMs = Number.POSITIVE_INFINITY): ExamSession | undefined {
   if (!isRecord(value) || typeof value.formId !== "string" || (value.paper !== "math1a" && value.paper !== "math2bc" && value.paper !== "math3") || typeof value.active !== "boolean" || typeof value.finished !== "boolean" || !isRecord(value.answers) || !Array.isArray(value.selectedOptionalSectionIds) || typeof value.startedAt !== "string" || typeof value.deadlineAt !== "string") return undefined;
   const answers: Record<string, number> = {};
   for (const [id, answer] of Object.entries(value.answers)) if (typeof answer === "number" && Number.isSafeInteger(answer) && answer >= 0 && answer < 4) answers[id] = answer;
   const startedAt = isValidIsoDate(value.startedAt) ? Date.parse(value.startedAt) : Number.NaN;
   const deadlineAt = isValidIsoDate(value.deadlineAt) ? Date.parse(value.deadlineAt) : Number.NaN;
-  if (!Number.isFinite(startedAt) || !Number.isFinite(deadlineAt) || deadlineAt < startedAt) return undefined;
+  const submittedAt = typeof value.submittedAt === "string" && isValidIsoDate(value.submittedAt) ? Date.parse(value.submittedAt) : Number.NaN;
+  const safeNow = Number.isFinite(nowMs) ? nowMs : Number.POSITIVE_INFINITY;
+  if (!Number.isFinite(startedAt) || !Number.isFinite(deadlineAt) || deadlineAt < startedAt || startedAt > safeNow) return undefined;
   if ((value.paper === "math1a" && !value.formId.startsWith("IA-")) || (value.paper === "math2bc" && !value.formId.startsWith("IIBC-")) || (value.paper === "math3" && !value.formId.startsWith("MATH3-"))) return undefined;
   if (value.active === value.finished) return undefined;
-  if (value.finished && !isValidIsoDate(value.submittedAt)) return undefined;
+  if (value.finished && (!Number.isFinite(submittedAt) || submittedAt < startedAt || submittedAt > safeNow)) return undefined;
   const knownOptionalIds = value.paper === "math2bc" ? new Set(["IIBC-02", "IIBC-03", "IIBC-04", "IIBC-05"]) : new Set<string>();
   const selectedOptionalSectionIds = [...new Set(value.selectedOptionalSectionIds.filter((id): id is string => typeof id === "string" && knownOptionalIds.has(id)))].slice(0, 3);
   if ((value.paper === "math1a" || value.paper === "math3") && selectedOptionalSectionIds.length > 0) return undefined;
@@ -471,10 +473,50 @@ export function normalizeExamSession(value: unknown): ExamSession | undefined {
 
 export function normalizeExamHistory(value: unknown): ExamResult[] {
   if (!Array.isArray(value)) return [];
+  const now = Date.now();
   return value.filter((entry): entry is ExamResult => {
     if (!isRecord(entry) || typeof entry.formId !== "string" || (entry.paper !== "math1a" && entry.paper !== "math2bc" && entry.paper !== "math3")) return false;
     const startedAt = isValidIsoDate(entry.startedAt) ? Date.parse(entry.startedAt) : Number.NaN;
     const submittedAt = isValidIsoDate(entry.submittedAt) ? Date.parse(entry.submittedAt) : Number.NaN;
-    return typeof entry.score === "number" && typeof entry.totalPoints === "number" && typeof entry.percentage === "number" && Array.isArray(entry.selectedOptionalSectionIds) && Number.isFinite(startedAt) && Number.isFinite(submittedAt) && submittedAt >= startedAt && Array.isArray(entry.unanswered) && typeof entry.elapsedSeconds === "number" && entry.elapsedSeconds >= 0 && typeof entry.timedOut === "boolean" && isRecord(entry.bySection);
+    const formIdPattern = entry.paper === "math1a" ? /^IA-F[1-3]$/ : entry.paper === "math2bc" ? /^IIBC-F[1-3]$/ : /^MATH3-F[1-3]$/;
+    const sectionPattern = entry.paper === "math1a" ? /^IA-0[1-4]$/ : entry.paper === "math2bc" ? /^IIBC-0[1-5]$/ : /^M3-0[1-4]$/;
+    const selected = Array.isArray(entry.selectedOptionalSectionIds) ? entry.selectedOptionalSectionIds : [];
+    const selectedIds = selected.filter((id): id is string => typeof id === "string");
+    const knownOptional = new Set(["IIBC-02", "IIBC-03", "IIBC-04", "IIBC-05"]);
+    const validSelection = selectedIds.length === selected.length
+      && new Set(selectedIds).size === selectedIds.length
+      && (entry.paper === "math2bc"
+        ? selectedIds.length === 3 && selectedIds.every((id) => knownOptional.has(id))
+        : selectedIds.length === 0);
+    if (!formIdPattern.test(entry.formId) || !validSelection) return false;
+    if (!Number.isFinite(startedAt) || !Number.isFinite(submittedAt) || startedAt > now || submittedAt > now || submittedAt < startedAt) return false;
+    const totalPoints = EXAM_CONFIG[entry.paper].totalPoints;
+    const score = typeof entry.score === "number" ? entry.score : Number.NaN;
+    const percentage = typeof entry.percentage === "number" ? entry.percentage : Number.NaN;
+    const elapsedSeconds = typeof entry.elapsedSeconds === "number" ? entry.elapsedSeconds : Number.NaN;
+    if (!Number.isSafeInteger(score) || score < 0 || score > totalPoints || entry.totalPoints !== totalPoints
+      || !Number.isSafeInteger(percentage) || percentage < 0 || percentage > 100 || percentage !== Math.round((score / totalPoints) * 100)
+      || !Number.isSafeInteger(elapsedSeconds) || elapsedSeconds < 0 || elapsedSeconds > EXAM_CONFIG[entry.paper].durationSeconds
+      || typeof entry.timedOut !== "boolean" || elapsedSeconds !== Math.max(0, Math.round((submittedAt - startedAt) / 1000))
+      || !Array.isArray(entry.unanswered) || new Set(entry.unanswered).size !== entry.unanswered.length
+      || !entry.unanswered.every((id) => typeof id === "string" && id.startsWith(`${entry.formId}-`))
+      || !isRecord(entry.bySection)) return false;
+    let sectionPoints = 0;
+    let sectionScore = 0;
+    let sectionUnanswered = 0;
+    for (const [sectionId, rawSection] of Object.entries(entry.bySection)) {
+      if (!sectionPattern.test(sectionId) || !isRecord(rawSection)) return false;
+      const points = typeof rawSection.points === "number" ? rawSection.points : Number.NaN;
+      const sectionMark = typeof rawSection.score === "number" ? rawSection.score : Number.NaN;
+      const unanswered = typeof rawSection.unanswered === "number" ? rawSection.unanswered : Number.NaN;
+      if (!Number.isSafeInteger(points) || points <= 0 || !Number.isSafeInteger(sectionMark) || sectionMark < 0 || sectionMark > points || !Number.isSafeInteger(unanswered) || unanswered < 0) return false;
+      sectionPoints += points;
+      sectionScore += sectionMark;
+      sectionUnanswered += unanswered;
+    }
+    return Object.keys(entry.bySection).length > 0
+      && sectionPoints === totalPoints
+      && sectionScore === score
+      && sectionUnanswered === entry.unanswered.length;
   }).slice(-30);
 }

@@ -55,9 +55,13 @@ export const DELAYED_RETEST_WAIT_MS = 7 * 24 * 60 * 60 * 1000;
  * A retry or an imported snapshot cannot skip a stage, and a delayed retest
  * is only valid after the transfer evidence has aged through its schedule.
  */
-export function masteryLevelFromEvidence(evidence: AttemptEvidence[]): number {
+export function masteryLevelFromEvidence(evidence: AttemptEvidence[], nowMs = Date.now()): number {
+  const safeNow = Number.isSafeInteger(nowMs) ? nowMs : Date.now();
   const ordered = evidence
-    .filter((entry) => entry.correct && Number.isFinite(Date.parse(entry.answeredAt)))
+    .filter((entry) => {
+      const answeredAt = Date.parse(entry.answeredAt);
+      return entry.correct && Number.isFinite(answeredAt) && answeredAt <= safeNow;
+    })
     .slice()
     .sort((left, right) => Date.parse(left.answeredAt) - Date.parse(right.answeredAt));
   let level = 0;

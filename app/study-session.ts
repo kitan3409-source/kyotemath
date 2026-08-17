@@ -240,8 +240,9 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
 }
 
 /** Validate a JSON-parsed state before passing it back to resumeStudySession. */
-export function isStudySessionState(value: unknown): value is StudySessionState {
+export function isStudySessionState(value: unknown, nowMs = Date.now()): value is StudySessionState {
   if (!isRecord(value)) return false;
+  const safeNow = Number.isSafeInteger(nowMs) ? nowMs : Date.now();
   return value.version === STUDY_SESSION_VERSION
     && typeof value.id === "string"
     && value.id.trim().length > 0
@@ -250,13 +251,15 @@ export function isStudySessionState(value: unknown): value is StudySessionState 
     && isNonNegativeSafeInteger(value.startedAtMs)
     && isNonNegativeSafeInteger(value.lastAccountedAtMs)
     && value.lastAccountedAtMs >= value.startedAtMs
+    && value.startedAtMs <= safeNow
+    && value.lastAccountedAtMs <= safeNow
     && isNonNegativeSafeInteger(value.activeMilliseconds)
     && isNonNegativeSafeInteger(value.awayMilliseconds);
 }
 
 /** Return a clean immutable copy of persisted JSON, or null when it is invalid. */
-export function restoreStudySession(value: unknown): StudySessionState | null {
-  if (!isStudySessionState(value)) return null;
+export function restoreStudySession(value: unknown, nowMs = Date.now()): StudySessionState | null {
+  if (!isStudySessionState(value, nowMs)) return null;
   return {
     version: STUDY_SESSION_VERSION,
     id: value.id,

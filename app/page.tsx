@@ -14,6 +14,7 @@ import { lessonModulesBatch05a } from "./content/lesson-modules-batch-05a";
 import { lessonModulesBatch05b } from "./content/lesson-modules-batch-05b";
 import {
   appendErrorRecord,
+  DELAYED_RETEST_WAIT_MS,
   ERROR_CAUSE_OPTIONS,
   isErrorCause,
   isMasteryComplete,
@@ -127,6 +128,48 @@ function masteryFromAttempts(source: Record<string, Attempt>) {
     if (level > 0) derived[concept.id] = level;
   }
   return derived;
+}
+
+function effectiveDueAtForAttempt(attempt: Attempt | undefined) {
+  if (attempt?.dueAt && isValidIsoDate(attempt.dueAt)) return attempt.dueAt;
+  const transfer = (attempt?.evidence ?? [])
+    .filter((entry) => entry.correct && !entry.delayed && entry.kind === "transfer" && isValidIsoDate(entry.answeredAt))
+    .sort((left, right) => Date.parse(left.answeredAt) - Date.parse(right.answeredAt))
+    .at(-1);
+  if (!transfer) return undefined;
+  const transferAt = Date.parse(transfer.answeredAt);
+  if (!Number.isFinite(transferAt) || transferAt > Date.now()) return undefined;
+  return new Date(transferAt + DELAYED_RETEST_WAIT_MS).toISOString();
+}
+
+function sanitizePracticeResume(
+  practice: PracticeResumeState | undefined,
+  sourceAttempts: Record<string, Attempt>,
+  sourceMastery: Record<string, number>,
+) {
+  if (!practice?.active) return practice;
+  const problem = problemById.get(practice.problemId);
+  if (!problem) return undefined;
+  const level = sourceMastery[practice.conceptId] ?? 0;
+  const dueAt = level === 3 ? effectiveDueAtForAttempt(sourceAttempts[practice.conceptId]) : undefined;
+  const delayedAllowed = level === 3 && Boolean(dueAt && Date.parse(dueAt) <= Date.now());
+  if (!problem.id.endsWith("-delayed") || delayedAllowed) return practice;
+  const replacement = problemForConcept(
+    practice.conceptId,
+    level === 3 ? 2 : level,
+    { firstByConcept: problemByConcept, problemsByConcept, stagedProblemsByConcept },
+  );
+  if (!replacement) return undefined;
+  return {
+    ...practice,
+    problemId: replacement.id,
+    phase: "lesson" as const,
+    lessonStep: "overview" as const,
+    answer: null,
+    feedback: null,
+    errorCause: null,
+    reviewCause: null,
+  };
 }
 
 function isCommonTestConcept(concept: Concept) {
@@ -273,7 +316,7 @@ function normalizeImportedProgress(value: unknown): PersistedProgress | null {
     practice: normalizePracticeForContent(value.practice, true),
     errorHistory: normalizeErrorHistoryForContent(value.errorHistory),
     examSession: (() => {
-      const session = normalizeExamSession(value.examSession);
+      const session = normalizeExamSession(value.examSession, Date.now());
       return session && examFormById.has(session.formId) ? session : undefined;
     })(),
     examHistory: normalizeExamHistory(value.examHistory).filter((result) => examFormById.has(result.formId)),
@@ -384,7 +427,7 @@ export default function Home() {
         setAwaySeconds(progress.awaySeconds);
         setGuideSeen(progress.guideSeen);
         setErrorHistory(normalizeErrorHistoryForContent(progress.errorHistory));
-        const restoredExam = normalizeExamSession(progress.examSession);
+        const restoredExam = normalizeExamSession(progress.examSession, Date.now());
         const usableExam = restoredExam && examFormById.has(restoredExam.formId) ? restoredExam : null;
         setExamSession(usableExam);
         setExamHistory(normalizeExamHistory(progress.examHistory));
@@ -393,7 +436,7 @@ export default function Home() {
           setSelectedOptionalSectionIds(usableExam.selectedOptionalSectionIds);
           setActiveTab("mock");
         }
-        const restoredPractice = normalizePracticeForContent(progress.practice);
+        const restoredPractice = sanitizePracticeResume(normalizePracticeForContent(progress.practice), progress.attempts, initialMastery);
         if (restoredPractice?.active) {
           setPracticeResumeActive(true);
           setSelectedConceptId(restoredPractice.conceptId);
@@ -419,10 +462,12 @@ export default function Home() {
         if (!firstRun) setSetupOpen(false);
         const storedSessionValue = safeParse<unknown>(readStored(storageKeys.studySession), null);
         const storedSessionEnvelope = isRecord(storedSessionValue) && isRecord(storedSessionValue.session) ? storedSessionValue : null;
-        const storedSession = restoreStudySession(storedSessionEnvelope?.session ?? storedSessionValue);
+        const now = Date.now();
+        const storedSession = restoreStudySession(storedSessionEnvelope?.session ?? storedSessionValue, now);
         const legacyStartedAt = typeof legacyFocus?.startedAt === "number"
           && Number.isSafeInteger(legacyFocus.startedAt)
           && legacyFocus.startedAt >= 0
+          && legacyFocus.startedAt <= now
           ? legacyFocus.startedAt
           : null;
         const legacySession = !storedSession && legacyStartedAt !== null
@@ -430,7 +475,6 @@ export default function Home() {
           : null;
         const recoveredSession = storedSession ?? legacySession;
         if (recoveredSession) {
-          const now = Date.now();
           const resumed = resumeStudySession(recoveredSession, now);
           studySessionRef.current = resumed;
           setStudySession(resumed);
@@ -469,14 +513,15 @@ export default function Home() {
     if (!hydrated) return;
     const syncFromAnotherTab = () => {
       void loadProgress().then((progress) => {
-        setMastery(masteryFromAttempts(progress.attempts));
+        const syncedMastery = masteryFromAttempts(progress.attempts);
+        setMastery(syncedMastery);
         setAttempts(progress.attempts);
         setStudyDates(progress.studyDates);
         setStudySeconds(progress.studySeconds);
         setAwaySeconds(progress.awaySeconds);
         setGuideSeen(progress.guideSeen);
         setErrorHistory(normalizeErrorHistoryForContent(progress.errorHistory));
-        const restoredExam = normalizeExamSession(progress.examSession);
+        const restoredExam = normalizeExamSession(progress.examSession, Date.now());
         const usableExam = restoredExam && examFormById.has(restoredExam.formId) ? restoredExam : null;
         setExamSession(usableExam);
         setExamHistory(normalizeExamHistory(progress.examHistory));
@@ -485,7 +530,7 @@ export default function Home() {
           setSelectedOptionalSectionIds(usableExam.selectedOptionalSectionIds);
           setActiveTab("mock");
         }
-        const restoredPractice = normalizePracticeForContent(progress.practice);
+        const restoredPractice = sanitizePracticeResume(normalizePracticeForContent(progress.practice), progress.attempts, syncedMastery);
         if (restoredPractice?.active) {
           setPracticeResumeActive(true);
           setSelectedConceptId(restoredPractice.conceptId);
@@ -660,18 +705,22 @@ export default function Home() {
   const isRouteComplete = (concept: Concept) => isMasteryComplete(mastery[concept.id]);
   const isPrerequisiteReady = (id: string) => isMasteryComplete(mastery[id]);
   const isUnlocked = (concept: Concept) => concept.requires.every(isPrerequisiteReady);
+  const dueAtForConcept = (conceptId: string) => {
+    const attempt = attempts[conceptId];
+    return (mastery[conceptId] ?? 0) === 3 ? effectiveDueAtForAttempt(attempt) : attempt?.dueAt;
+  };
   const nextConcept = (() => {
     const now = currentTime();
     const candidates = commonTestConcepts
       .filter((concept) => {
-        const dueAt = attempts[concept.id]?.dueAt;
+        const dueAt = dueAtForConcept(concept.id);
         const due = Boolean(dueAt && Date.parse(dueAt) <= now);
         const waitingForDelayed = (mastery[concept.id] ?? 0) === 3 && !(dueAt && Date.parse(dueAt) <= now);
         return isUnlocked(concept) && !waitingForDelayed && (!isRouteComplete(concept) || due) && (hasPractice(concept.id) || Boolean(conceptGuides[concept.id]));
       })
       .sort((a, b) => {
         const due = (concept: Concept) => {
-          const dueAt = attempts[concept.id]?.dueAt;
+          const dueAt = dueAtForConcept(concept.id);
           return dueAt && Date.parse(dueAt) <= now ? 0 : 1;
         };
         const untouched = (concept: Concept) => isRouteComplete(concept) ? 1 : 0;
@@ -704,7 +753,8 @@ export default function Home() {
   const selectedLevel = mastery[selectedConcept.id] ?? 0;
   const targetProblem = problemByConcept.get(nextConcept.id);
   const streak = currentStreak(studyDates);
-  const targetDue = Boolean(attempts[nextConcept.id]?.dueAt && Date.parse(attempts[nextConcept.id].dueAt as string) <= currentTime());
+  const targetDueAt = dueAtForConcept(nextConcept.id);
+  const targetDue = Boolean(targetDueAt && Date.parse(targetDueAt) <= currentTime());
   const examRemainingSeconds = examSession?.active ? Math.max(0, Math.ceil((Date.parse(examSession.deadlineAt) - examNow) / 1000)) : 0;
   const latestExamResult = examSession?.finished && examSession.submittedAt
     ? examHistory.find((result) => result.formId === examSession.formId && result.submittedAt === examSession.submittedAt) ?? examHistory.filter((result) => result.formId === examSession.formId).at(-1)
@@ -724,7 +774,7 @@ export default function Home() {
   function openPracticeFor(concept: Concept) {
     setSelectedConceptId(concept.id);
     const level = mastery[concept.id] ?? 0;
-    const dueAt = attempts[concept.id]?.dueAt;
+    const dueAt = dueAtForConcept(concept.id);
     const delayedWaiting = level === 3 && !(dueAt && Date.parse(dueAt) <= currentTime());
     const problem = problemForConcept(concept.id, delayedWaiting ? 2 : level, { firstByConcept: problemByConcept, problemsByConcept, stagedProblemsByConcept });
     if (!problem) return;
@@ -750,7 +800,7 @@ export default function Home() {
     const currentLevel = mastery[observedConceptId] ?? 0;
     const expectedStage = currentLevel === 0 ? "quick" : currentLevel === 1 ? "standard" : currentLevel === 2 ? "transfer" : currentLevel === 3 ? "delayed" : "complete";
     const isDelayed = problem.id.endsWith("-delayed");
-    const dueAt = attempts[observedConceptId]?.dueAt;
+    const dueAt = currentLevel === 3 ? effectiveDueAtForAttempt(attempts[observedConceptId]) : attempts[observedConceptId]?.dueAt;
     const delayedEligible = !isDelayed || Boolean(dueAt && Date.parse(dueAt) <= Date.parse(now));
     const stageMatches = (expectedStage === "delayed" ? isDelayed : expectedStage === problem.kind && !isDelayed) && delayedEligible;
     setAttempts((previous) => {
@@ -758,14 +808,16 @@ export default function Home() {
       const advances = correct && currentLevel < 4 && stageMatches;
       const nextLevel = advances ? currentLevel + 1 : currentLevel;
       const intervalDays = correct ? [0, 1, 3, 7, 21][nextLevel] ?? 21 : 0;
-      const dueAt = new Date(currentTime() + intervalDays * 24 * 60 * 60 * 1000).toISOString();
       const old = next[observedConceptId] ?? { correct: 0, total: 0, lastAt: now };
+      const nextDueAt = stageMatches
+        ? new Date(currentTime() + intervalDays * 24 * 60 * 60 * 1000).toISOString()
+        : (currentLevel === 3 ? effectiveDueAtForAttempt(old) : old.dueAt);
       const evidence = [...(old.evidence ?? []), { problemId: problem.id, kind: problem.kind, delayed: problem.id.endsWith("-delayed"), correct, answeredAt: now, source: "observed" as const }].slice(-60);
       next[observedConceptId] = {
         correct: old.correct + (correct ? 1 : 0),
         total: old.total + 1,
         lastAt: now,
-        dueAt,
+        dueAt: nextDueAt,
         streak: correct ? (old.streak ?? 0) + 1 : 0,
         lastErrorCause: correct ? old.lastErrorCause : undefined,
         retry: undefined,
@@ -805,12 +857,14 @@ export default function Home() {
     setPracticeErrorCause(cause);
     setAttempts((previous) => {
       const current = previous[conceptId] ?? { correct: 0, total: 0, lastAt: scheduledAt };
+      const delayedDueAt = (mastery[conceptId] ?? 0) === 3 ? effectiveDueAtForAttempt(current) : undefined;
+      const preserveDelayedSchedule = Boolean(delayedDueAt && Date.parse(delayedDueAt) > currentTime());
       return {
         ...previous,
         [conceptId]: {
           ...current,
           lastErrorCause: cause,
-          dueAt: scheduledAt,
+          dueAt: preserveDelayedSchedule ? delayedDueAt : scheduledAt,
           retry: { cause, problemId: currentPractice.id, scheduledAt },
         },
       };
@@ -843,23 +897,24 @@ export default function Home() {
     const currentConcept = conceptById.get(selectedConceptId);
     const candidates = concepts.filter((concept) => isCommonTestConcept(concept) && isUnlocked(concept) && hasPractice(concept.id));
     const dueConcept = candidates.filter((concept) => {
-      const dueAt = attempts[concept.id]?.dueAt;
+      const dueAt = dueAtForConcept(concept.id);
       return Boolean(dueAt && Date.parse(dueAt) <= now);
     }).sort((a, b) => (conceptOrder.get(a.id) ?? 9999) - (conceptOrder.get(b.id) ?? 9999))[0];
     const currentLevel = currentConcept ? mastery[currentConcept.id] ?? 0 : 4;
-    const currentDue = Boolean(currentConcept && attempts[currentConcept.id]?.dueAt && Date.parse(attempts[currentConcept.id]?.dueAt as string) <= now);
+    const currentDueAt = currentConcept ? dueAtForConcept(currentConcept.id) : undefined;
+    const currentDue = Boolean(currentDueAt && Date.parse(currentDueAt) <= now);
     const canContinueCurrent = currentConcept && (currentLevel < 3 || (currentLevel === 3 && currentDue));
     const eligibleCandidates = candidates.filter((concept) => {
       const level = mastery[concept.id] ?? 0;
-      const dueAt = attempts[concept.id]?.dueAt;
+      const dueAt = dueAtForConcept(concept.id);
       const due = Boolean(dueAt && Date.parse(dueAt) <= now);
       return level < 3 || (level === 3 && due);
     }).sort((a, b) => (conceptOrder.get(a.id) ?? 9999) - (conceptOrder.get(b.id) ?? 9999));
-    const nextConceptCandidate = canContinueCurrent
-      ? currentConcept
-      : dueConcept ?? eligibleCandidates[0] ?? currentConcept ?? candidates[0];
-    const delayed = Boolean(dueConcept && nextConceptCandidate?.id === dueConcept.id && (mastery[dueConcept.id] ?? 0) === 3);
+    const nextConceptCandidate = dueConcept
+      ?? (canContinueCurrent ? currentConcept : eligibleCandidates[0] ?? currentConcept ?? candidates[0]);
     const nextLevel = nextConceptCandidate ? mastery[nextConceptCandidate.id] ?? 0 : 0;
+    const nextDueAt = nextConceptCandidate ? dueAtForConcept(nextConceptCandidate.id) : undefined;
+    const delayed = Boolean(nextLevel === 3 && nextDueAt && Date.parse(nextDueAt) <= now);
     const next = (nextConceptCandidate && (delayed ? delayedProblemForConcept(nextConceptCandidate.id, { problemsByConcept, stagedProblemsByConcept }) : problemForConcept(nextConceptCandidate.id, nextLevel === 3 ? 2 : nextLevel, { firstByConcept: problemByConcept, problemsByConcept, stagedProblemsByConcept }))) ?? currentPractice;
     setPracticeProblemId(next.id);
     setPracticeResumeActive(true);
@@ -1156,7 +1211,7 @@ export default function Home() {
       setAwaySeconds(imported.awaySeconds);
       setGuideSeen(imported.guideSeen);
       setErrorHistory(normalizeErrorHistoryForContent(imported.errorHistory));
-      const importedExam = normalizeExamSession(imported.examSession);
+      const importedExam = normalizeExamSession(imported.examSession, Date.now());
       const usableExam = importedExam && examFormById.has(importedExam.formId) ? importedExam : null;
       setExamSession(usableExam);
       setExamHistory(normalizeExamHistory(imported.examHistory).filter((result) => examFormById.has(result.formId)));
@@ -1164,7 +1219,7 @@ export default function Home() {
         setExamFormId(usableExam.formId);
         setSelectedOptionalSectionIds(usableExam.selectedOptionalSectionIds);
       }
-      const importedPractice = normalizePracticeForContent(imported.practice);
+      const importedPractice = sanitizePracticeResume(normalizePracticeForContent(imported.practice), imported.attempts, imported.mastery);
       if (importedPractice?.active) {
         setPracticeResumeActive(true);
         setSelectedConceptId(importedPractice.conceptId);

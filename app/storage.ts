@@ -119,7 +119,7 @@ export function normalizeProgress(value: unknown): PersistedProgress | null {
   }
   const practice = normalizePracticeSnapshot(value.practice);
   const errorHistory = normalizeErrorHistory(value.errorHistory);
-  const examSession = normalizeExamSession(value.examSession);
+  const examSession = normalizeExamSession(value.examSession, Date.now());
   const examHistory = normalizeExamHistory(value.examHistory);
   const updatedAt = validTime(value.updatedAt) ? value.updatedAt : undefined;
   const clearedAt = validTime(value.clearedAt) ? value.clearedAt : undefined;
@@ -311,7 +311,10 @@ async function persistProgress(progress: PersistedProgress) {
   // reset may start a new history, identified by its per-tab session marker.
   if (current?.clearedAt && !progress.clearedAt && !ownsReset) return;
   const base = ownsReset && current ? ({ ...current, clearedAt: undefined } as PersistedProgress) : current ?? null;
-  const snapshot = base ? mergeProgress(base, incoming) : incoming;
+  const merged = base ? mergeProgress(base, incoming) : incoming;
+  const snapshot = ownsReset && current?.clearedAt && !progress.clearedAt
+    ? { ...merged, clearedAt: current.clearedAt }
+    : merged;
   try {
     window.localStorage.setItem(LOCAL_KEYS.mastery, JSON.stringify(snapshot.mastery));
     window.localStorage.setItem(LOCAL_KEYS.attempts, JSON.stringify(snapshot.attempts));

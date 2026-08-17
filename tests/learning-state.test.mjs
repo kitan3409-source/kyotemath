@@ -32,6 +32,16 @@ test("mastery rebuild is chronological and blocks an early delayed retest", () =
   assert.equal(masteryLevelFromEvidence([standardTooEarly, quickAfterStandard, transfer, delayed]), 1);
 });
 
+test("future evidence cannot manufacture mastery", () => {
+  const now = Date.parse("2026-01-01T00:00:00.000Z");
+  const at = (offset) => new Date(now + offset).toISOString();
+  assert.equal(masteryLevelFromEvidence([
+    { problemId: "q", kind: "quick", delayed: false, correct: true, answeredAt: at(1), source: "imported" },
+    { problemId: "s", kind: "standard", delayed: false, correct: true, answeredAt: at(2), source: "imported" },
+    { problemId: "t", kind: "transfer", delayed: false, correct: true, answeredAt: at(3), source: "imported" },
+  ], now), 0);
+});
+
 test("practice snapshots keep valid resume data and reject invalid phases", () => {
   const snapshot = normalizePracticeSnapshot({
     active: true,
