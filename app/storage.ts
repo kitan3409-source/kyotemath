@@ -1,0 +1,156 @@
+export type PersistedProgress = {
+  mastery: Record<string, number>;
+  attempts: Record<string, {
+    correct: number;
+    total: number;
+    lastAt: string;
+    dueAt?: string;
+    streak?: number;
+  }>;
+  studyDates: string[];
+};
+
+const DB_NAME = "kyote-math-60";
+const DB_VERSION = 1;
+const STORE_NAME = "progress";
+const PROGRESS_KEY = "current";
+const LOCAL_KEYS = {
+  mastery: "kyote-math-60:mastery",
+  attempts: "kyote-math-60:attempts",
+  studyDates: "kyote-math-60:study-dates",
+} as const;
+
+let writeQueue = Promise.resolve();
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeProgress(value: unknown): PersistedProgress | null {
+  if (!isRecord(value) || !isRecord(value.mastery) || !isRecord(value.attempts)) return null;
+  const mastery: Record<string, number> = {};
+  for (const [id, rawLevel] of Object.entries(value.mastery)) {
+    if (typeof rawLevel === "number" && Number.isFinite(rawLevel)) mastery[id] = Math.min(4, Math.max(0, Math.round(rawLevel)));
+  }
+  const attempts: PersistedProgress["attempts"] = {};
+  for (const [id, rawAttempt] of Object.entries(value.attempts)) {
+    if (!isRecord(rawAttempt)) continue;
+    const correct = typeof rawAttempt.correct === "number" && Number.isFinite(rawAttempt.correct) ? Math.max(0, Math.floor(rawAttempt.correct)) : 0;
+    const total = typeof rawAttempt.total === "number" && Number.isFinite(rawAttempt.total) ? Math.max(correct, Math.floor(rawAttempt.total)) : 0;
+    if (total === 0) continue;
+    const lastAt = typeof rawAttempt.lastAt === "string" ? rawAttempt.lastAt : new Date().toISOString();
+    const dueAt = typeof rawAttempt.dueAt === "string" ? rawAttempt.dueAt : undefined;
+    const streak = typeof rawAttempt.streak === "number" && Number.isFinite(rawAttempt.streak) ? Math.max(0, Math.floor(rawAttempt.streak)) : undefined;
+    attempts[id] = { correct: Math.min(correct, total), total, lastAt, dueAt, streak };
+  }
+  const studyDates = Array.isArray(value.studyDates)
+    ? value.studyDates.filter((date): date is string => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date))
+    : [];
+  return { mastery, attempts, studyDates: [...new Set(studyDates)].slice(-180) };
+}
+
+function readLocalProgress(): PersistedProgress | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const masteryRaw = window.localStorage.getItem(LOCAL_KEYS.mastery);
+    const attemptsRaw = window.localStorage.getItem(LOCAL_KEYS.attempts);
+    const studyDatesRaw = window.localStorage.getItem(LOCAL_KEYS.studyDates);
+    if (masteryRaw === null && attemptsRaw === null && studyDatesRaw === null) return null;
+    return normalizeProgress({
+      mastery: JSON.parse(masteryRaw ?? "{}") as unknown,
+      attempts: JSON.parse(attemptsRaw ?? "{}") as unknown,
+      studyDates: JSON.parse(studyDatesRaw ?? "[]") as unknown,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function localFallback(): PersistedProgress {
+  return readLocalProgress() ?? { mastery: {}, attempts: {}, studyDates: [] };
+}
+
+function openDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB could not open"));
+  });
+}
+
+export async function loadProgress(): Promise<PersistedProgress> {
+  const fallback = localFallback();
+  const localProgress = readLocalProgress();
+  if (typeof window === "undefined" || !window.indexedDB) return fallback;
+  try {
+    const database = await openDatabase();
+    const value = await new Promise<PersistedProgress | undefined>((resolve, reject) => {
+      const request = database.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(PROGRESS_KEY);
+      request.onsuccess = () => resolve(request.result as PersistedProgress | undefined);
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+    if (localProgress) return localProgress;
+    return normalizeProgress(value) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function persistProgress(progress: PersistedProgress) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LOCAL_KEYS.mastery, JSON.stringify(progress.mastery));
+    window.localStorage.setItem(LOCAL_KEYS.attempts, JSON.stringify(progress.attempts));
+    window.localStorage.setItem(LOCAL_KEYS.studyDates, JSON.stringify(progress.studyDates));
+  } catch {
+    // IndexedDB is attempted below even when localStorage is unavailable.
+  }
+  if (!window.indexedDB) return;
+  try {
+    const database = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const request = database.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).put(progress, PROGRESS_KEY);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+  } catch {
+    // The localStorage copy remains available as a recovery path.
+  }
+}
+
+export function saveProgress(progress: PersistedProgress) {
+  // State effects can fire in quick succession after one answer. Serialize writes
+  // so an older IndexedDB transaction cannot finish after a newer one.
+  writeQueue = writeQueue.then(() => persistProgress(progress));
+  return writeQueue;
+}
+
+async function removeProgress() {
+  if (typeof window === "undefined") return;
+  try {
+    for (const key of Object.values(LOCAL_KEYS)) window.localStorage.removeItem(key);
+  } catch {
+    // Continue to IndexedDB when localStorage is blocked.
+  }
+  if (!window.indexedDB) return;
+  try {
+    const database = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const request = database.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).delete(PROGRESS_KEY);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+  } catch {
+    // The database may be unavailable in private browsing; localStorage is already cleared.
+  }
+}
+
+export function clearProgress() {
+  // Queue the delete after prior writes and before any later writes.
+  writeQueue = writeQueue.then(removeProgress);
+  return writeQueue;
+}

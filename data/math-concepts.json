@@ -387,6 +387,18 @@
     {"id":"III-45","course":"III","unit":"積分法","title":"積分による不等式・評価","requires":["III-37","III-38"],"target":"面積の大小や関数の上下から積分不等式を作れる","priority":"core","tags":["積分","入試"]},
     {"id":"III-46","course":"III","unit":"積分法","title":"微積分によるモデル統合","requires":["III-25","III-26","III-39","III-45"],"target":"変化率・累積量・最適化を一つの現象モデルで統合できる","priority":"core","tags":["統合","モデル化"]}
   ],
+  "exam_scope": {
+    "id": "common_test_math_2027",
+    "label": "共通テスト数学（6割目標）",
+    "included": [
+      {"course":"I","units":["数と式","集合と命題","二次関数","図形と計量","データの分析"]},
+      {"course":"A","units":["場合の数と確率","図形の性質"]},
+      {"course":"II","units":["いろいろな式","図形と方程式","指数関数・対数関数","三角関数","微分法・積分法"]},
+      {"course":"B","units":["数列","統計的な推測"]},
+      {"course":"C","units":["ベクトル","平面上の曲線と複素数平面"]}
+    ],
+    "excluded_from_daily_core": ["bridge","数学と人間の活動","数学と社会生活","数学的な表現の工夫","III"]
+  },
   "app_recommendations": {
     "diagnostic": "F-01〜F-21を全件やらず、各クラスターから2〜4問ずつ出し、requiresの上流から未習得を探索する。",
     "lesson_unit": "1ノードを、直感→定義→最小例→逆向き問題→転移問題の5画面に分ける。",

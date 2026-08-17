@@ -1,5 +1,12 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#0c1013",
+};
 
 export const metadata: Metadata = {
   title: "共テ数学60",
@@ -7,10 +14,15 @@ export const metadata: Metadata = {
   manifest: "/manifest.webmanifest",
   other: {
     "codex-preview": "development",
+    "apple-mobile-web-app-capable": "yes",
+    "apple-mobile-web-app-status-bar-style": "black-translucent",
+    "apple-mobile-web-app-title": "数学60",
+    "format-detection": "telephone=no",
   },
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
+    apple: "/apple-touch-icon.png",
   },
 };
 
