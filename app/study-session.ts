@@ -13,6 +13,7 @@
 export const STUDY_SESSION_VERSION = 1 as const;
 export const DEFAULT_TARGET_HOURS = 700 as const;
 export const SECONDS_PER_HOUR = 60 * 60;
+export const FOCUS_DURATION_SECONDS = [3 * 60, 10 * 60, 20 * 60] as const;
 
 export type StudySessionPhase = "active" | "away";
 
@@ -237,6 +238,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+export function normalizeFocusDuration(value: unknown, fallback = 20 * 60): number {
+  return typeof value === "number" && FOCUS_DURATION_SECONDS.includes(value as (typeof FOCUS_DURATION_SECONDS)[number])
+    ? value
+    : fallback;
 }
 
 /** Validate a JSON-parsed state before passing it back to resumeStudySession. */

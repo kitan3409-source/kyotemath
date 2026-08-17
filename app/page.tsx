@@ -53,6 +53,7 @@ import {
   elapsedSeconds as sessionElapsedSeconds,
   getStudyProgress,
   markPhoneAway,
+  normalizeFocusDuration,
   restoreStudySession,
   resumeStudySession,
   startStudySession,
@@ -478,12 +479,8 @@ export default function Home() {
           const resumed = resumeStudySession(recoveredSession, now);
           studySessionRef.current = resumed;
           setStudySession(resumed);
-          const storedTotalSeconds = storedSessionEnvelope ? safeNonNegativeInteger(storedSessionEnvelope.focusTotalSeconds, 20 * 60) : 20 * 60;
-          const legacyTotalSeconds = typeof legacyFocus?.totalSeconds === "number"
-            && Number.isSafeInteger(legacyFocus.totalSeconds)
-            && legacyFocus.totalSeconds > 0
-            ? legacyFocus.totalSeconds
-            : 20 * 60;
+          const storedTotalSeconds = storedSessionEnvelope ? normalizeFocusDuration(storedSessionEnvelope.focusTotalSeconds) : 20 * 60;
+          const legacyTotalSeconds = normalizeFocusDuration(legacyFocus?.totalSeconds);
           const totalSeconds = storedSessionEnvelope ? storedTotalSeconds : legacyTotalSeconds;
           setFocusTotalSeconds(totalSeconds);
           setFocusSeconds(sessionElapsedSeconds(resumed, now));
