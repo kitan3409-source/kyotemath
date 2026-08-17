@@ -4,6 +4,7 @@ import { type ChangeEvent, useEffect, useRef, useState } from "react";
 import conceptData from "@/data/math-concepts.json";
 import { problemBank, type Problem } from "./problem-bank";
 import { conceptGuides, type ConceptGuide } from "./content/concept-guides";
+import { lessonModules, type LessonModule } from "./content/lesson-modules";
 import { clearProgress, loadProgress, saveProgress, type PersistedProgress } from "./storage";
 import {
   awaySeconds as sessionAwaySeconds,
@@ -23,6 +24,7 @@ import {
 type Concept = (typeof conceptData.concepts)[number];
 type Tab = "today" | "map" | "practice" | "mock" | "settings";
 type CourseFilter = "all" | "bridge" | "I" | "A" | "II" | "B" | "C" | "III";
+type PracticePhase = "lesson" | "question";
 type Attempt = { correct: number; total: number; lastAt: string; dueAt?: string; streak?: number };
 type Feedback = { correct: boolean; explanation: string };
 type MockSession = { active: boolean; index: number; answers: Record<string, number>; finished: boolean };
@@ -46,6 +48,7 @@ for (const problem of problemBank) {
   const primaryConceptId = primaryConceptIdFor(problem);
   if (primaryConceptId && !problemByConcept.has(primaryConceptId)) problemByConcept.set(primaryConceptId, problem);
 }
+const lessonByConcept = new Map<string, LessonModule>(lessonModules.map((lesson) => [lesson.conceptId, lesson]));
 const conceptOrder = new Map(
   conceptData.design.recommended_order.flatMap((phase, phaseIndex) => phase.ids.map((id, idIndex) => [id, phaseIndex * 100 + idIndex] as const)),
 );
@@ -215,6 +218,7 @@ export default function Home() {
   const [mapCourse, setMapCourse] = useState<CourseFilter>("all");
   const [mapSearch, setMapSearch] = useState("");
   const [practiceProblemId, setPracticeProblemId] = useState(problemByConcept.get("I-01")?.id ?? problemBank[0].id);
+  const [practicePhase, setPracticePhase] = useState<PracticePhase>("lesson");
   const [practiceAnswer, setPracticeAnswer] = useState<number | null>(null);
   const [practiceFeedback, setPracticeFeedback] = useState<Feedback | null>(null);
   const [mockActive, setMockActive] = useState(false);
@@ -469,6 +473,7 @@ export default function Home() {
   })();
   const selectedConcept = conceptById.get(selectedConceptId) ?? nextConcept;
   const selectedGuide: ConceptGuide | undefined = conceptGuides[selectedConcept.id];
+  const selectedLesson: LessonModule | undefined = lessonByConcept.get(selectedConcept.id);
   const currentPractice = problemBank.find((problem) => problem.id === practiceProblemId) ?? problemBank[0];
   const currentMock = mockProblems[mockIndex] ?? mockProblems[0];
 
@@ -510,6 +515,7 @@ export default function Home() {
     const problem = problemByConcept.get(concept.id);
     if (!problem) return;
     setPracticeProblemId(problem.id);
+    setPracticePhase("lesson");
     setPracticeAnswer(null);
     setPracticeFeedback(null);
     setActiveTab("practice");
@@ -566,6 +572,7 @@ export default function Home() {
       return aDue - bDue || (mastery[aId] ?? 0) - (mastery[bId] ?? 0);
     })[0] ?? currentPractice;
     setPracticeProblemId(next.id);
+    setPracticePhase("lesson");
     setPracticeAnswer(null);
     setPracticeFeedback(null);
     const firstConcept = conceptById.get(primaryConceptIdFor(next));
@@ -629,7 +636,7 @@ export default function Home() {
   }
 
   function markGuideRead(concept: Concept) {
-    if (!conceptGuides[concept.id]) return;
+    if (!conceptGuides[concept.id] && !lessonByConcept.has(concept.id)) return;
     setGuideSeen((previous) => previous[concept.id] ? previous : { ...previous, [concept.id]: true });
     setMastery((previous) => ({ ...previous, [concept.id]: Math.max(previous[concept.id] ?? 0, 1) }));
     recordStudyDay();
@@ -738,6 +745,7 @@ export default function Home() {
     void saveProgress({ mastery: mergedMastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen });
     setSelectedConceptId("I-01");
     setPracticeProblemId("Q-I01-01");
+    setPracticePhase("lesson");
     setActiveTab("practice");
     writeStored(storageKeys.initialized, "true");
     setSetupOpen(false);
@@ -748,6 +756,7 @@ export default function Home() {
     setSetupOpen(false);
     setSelectedConceptId("F-01");
     setPracticeProblemId("Q-F01-01");
+    setPracticePhase("lesson");
     setActiveTab("practice");
   }
 
@@ -824,6 +833,7 @@ export default function Home() {
     setMockIndex(0);
     setMockAnswers({});
     setMockFinished(false);
+    setPracticePhase("lesson");
     setExpandedConceptId(null);
     stopNoise();
     removeStored(storageKeys.mock);
@@ -909,6 +919,7 @@ export default function Home() {
   }
 
   function renderPractice() {
+    if (practicePhase === "lesson") return renderLesson();
     const selectedOption = practiceAnswer !== null ? currentPractice.options[practiceAnswer] : null;
     return (
       <div className="page-stack">
@@ -921,6 +932,90 @@ export default function Home() {
             <section className="tip-card"><span className="tip-icon">✦</span><div><strong>共テのコツ</strong><p>正答後に「なぜその式になるか」を一文で言えたら、次の概念へ進もう。</p></div></section>
           </aside>
         </div>
+      </div>
+    );
+  }
+
+  function renderLesson() {
+    const guide = selectedGuide;
+    const lesson = selectedLesson;
+    const prerequisiteIds = lesson?.prerequisiteIds ?? selectedConcept.requires;
+    const prerequisiteNames = prerequisiteIds.map((id) => conceptById.get(id)?.title ?? id);
+    return (
+      <div className="page-stack">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow accent">LESSON FIRST</p>
+            <h2>いきなり解かない。まず理解する。</h2>
+            <p>このページを読んでから、最後に確認問題を1問だけ解く。外部教材は前提にしない。</p>
+          </div>
+          <span className="mode-badge">{courseLabels[selectedConcept.course]} / {selectedConcept.id}</span>
+        </div>
+        <section className="lesson-hero panel-card">
+          <div>
+            <p className="eyebrow">TODAY&apos;S CONCEPT</p>
+            <h3>{selectedConcept.title}</h3>
+            <p>{selectedConcept.target}</p>
+            <div className="tag-row"><span className="tag">{selectedConcept.unit}</span><span className="tag">{selectedConcept.priority === "core" ? "共テの幹線" : "補助レーン"}</span>{selectedConcept.tags.slice(0, 3).map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div>
+          </div>
+          <div className="lesson-time"><strong>{currentPractice.estimatedSeconds < 60 ? "3" : "5"}</strong><span>分で読む</span></div>
+        </section>
+        {guide ? (
+          <section className="lesson-grid">
+            <article className="lesson-block panel-card"><span className="lesson-number">01</span><p className="eyebrow accent">CORE IDEA</p><h3>これは何？</h3><p>{guide.definition}</p></article>
+            <article className="lesson-block panel-card"><span className="lesson-number">02</span><p className="eyebrow accent">FIRST MOVE</p><h3>問題を見たら最初にすること</h3><p>{guide.firstMove}</p></article>
+            <article className="lesson-block panel-card warning"><span className="lesson-number">03</span><p className="eyebrow">COMMON TRAP</p><h3>ここで失点しやすい</h3><p>{guide.trap}</p></article>
+          </section>
+        ) : (
+          <section className="lesson-block panel-card"><p className="eyebrow accent">CONCEPT TARGET</p><h3>この概念でできるようになること</h3><p>{selectedConcept.target}</p></section>
+        )}
+        {lesson && <>
+          <section className="lesson-detail-grid">
+            <article className="lesson-detail panel-card">
+              <p className="eyebrow accent">LESSON GOAL</p>
+              <h3>今日できるようになること</h3>
+              <p className="lesson-prose">{lesson.goal}</p>
+              <div className="lesson-why"><strong>なぜ必要？</strong><p>{lesson.whyItMatters}</p></div>
+            </article>
+            <article className="lesson-detail panel-card">
+              <p className="eyebrow accent">HOW TO THINK</p>
+              <h3>公式を使う前の考え方</h3>
+              <p className="lesson-prose">{lesson.explanation}</p>
+            </article>
+          </section>
+          <section className="lesson-example panel-card">
+            <div className="lesson-section-heading"><div><p className="eyebrow accent">WORKED EXAMPLE</p><h3>途中式を見ながら解く</h3></div><span>例題</span></div>
+            <p className="lesson-problem">{lesson.workedExample.problem}</p>
+            <ol className="lesson-steps">{lesson.workedExample.steps.map((step, index) => <li key={`${lesson.id}-step-${index}`}><span>{index + 1}</span><p>{step}</p></li>)}</ol>
+            <div className="lesson-answer"><strong>答え</strong><span>{lesson.workedExample.answer}</span></div>
+          </section>
+          <section className="lesson-detail-grid">
+            <article className="lesson-detail panel-card warning">
+              <p className="eyebrow">COMMON MISTAKES</p>
+              <h3>よくある失敗</h3>
+              <ul className="lesson-list">{lesson.commonMistakes.map((mistake) => <li key={mistake}>{mistake}</li>)}</ul>
+            </article>
+            <article className="lesson-detail panel-card lesson-check">
+              <p className="eyebrow accent">QUICK CHECK</p>
+              <h3>数字を変えた確認問題</h3>
+              <p className="lesson-problem">{lesson.quickCheck.problem}</p>
+              <details>
+                <summary>答えと理由を見る</summary>
+                <p><strong>答え：</strong>{lesson.quickCheck.answer}</p>
+                <p>{lesson.quickCheck.explanation}</p>
+              </details>
+            </article>
+          </section>
+          <section className="lesson-signal panel-card"><p className="eyebrow accent">EXAM SIGNAL</p><h3>共テでこの型を見抜くサイン</h3><p>{lesson.examSignal}</p></section>
+        </>}
+        <section className="lesson-bridge panel-card">
+          <div><p className="eyebrow">WHY THIS COMES NOW</p><h3>{prerequisiteNames.length > 0 ? "前提からつながっている" : "ここが出発点"}</h3><p>{prerequisiteNames.length > 0 ? `前提は ${prerequisiteNames.join(" / ")}。この概念は、それらを使って共テの問題文を式へ変換するための部品です。` : "ここで使う言葉と操作を先に固定してから、次の問題へ進みます。"}</p></div>
+          <div className="lesson-rule"><strong>読む順番</strong><span>{lesson ? "目標 → 考え方 → 例題 → ミス → 確認問題" : "意味 → 最初の一手 → 罠 → 1問"}</span></div>
+        </section>
+        <section className="lesson-next panel-card">
+          <div><p className="eyebrow accent">NEXT</p><h3>読めたら、確認問題へ</h3><p>正解することより、解説の「最初の一手」を自分の言葉で再現できるかを確認する。</p></div>
+          <button className="button button-primary" type="button" onClick={() => { markGuideRead(selectedConcept); setPracticePhase("question"); }}>確認問題を解く <span>→</span></button>
+        </section>
       </div>
     );
   }
@@ -943,7 +1038,7 @@ export default function Home() {
           <article className="setting-card panel-card"><div><p className="eyebrow">IOS START</p><h3>ホーム画面に追加</h3><p>Safariの共有ボタンから「ホーム画面に追加」。追加後もオフラインで使えます。</p></div><span className="setting-hint">Safari → 共有 → 追加</span></article>
           <article className="setting-card panel-card danger-card"><div><p className="eyebrow">RESET</p><h3>最初からやり直す</h3><p>概念の到達度と正答履歴を消去する。</p></div><button className="button button-danger" type="button" onClick={resetData}>記録を消去</button></article>
         </section>
-        <section className="about-card panel-card"><div className="about-mark">Σ</div><div><p className="eyebrow">ABOUT THIS BUILD</p><h3>共テ数学60 / v0.3</h3><p>高校数学 I・A・II・B・C・III を320概念に分解したローカルファーストPWA。共テ対象225概念に{Object.keys(conceptGuides).length}件の1分ガイドと{problemBank.length}問を接続し、0→100%の一本道を作る。</p></div></section>
+        <section className="about-card panel-card"><div className="about-mark">Σ</div><div><p className="eyebrow">ABOUT THIS BUILD</p><h3>共テ数学60 / v0.4</h3><p>高校数学 I・A・II・B・C・III を320概念に分解したローカルファーストPWA。共テ対象225概念に{lessonModules.length}本の本編レッスン、{Object.keys(conceptGuides).length}件の1分ガイド、{problemBank.length}問を接続し、外部教材なしで「解説 → 例題 → 確認問題」へ進める。</p></div></section>
       </div>
     );
   }
@@ -961,7 +1056,7 @@ export default function Home() {
   return (
     <main className="app-shell">
       <header className="topbar"><div className="brand"><div className="brand-mark">Σ</div><div><p className="brand-kicker">COMMON TEST / MATH</p><h1>共テ数学60</h1></div></div><div className="topbar-right"><span className={`offline-pill ${isOnline ? "online" : "offline"}`}><i /><span className="online-label">{isOnline ? "オンライン / オフライン対応" : "オフライン中"}</span><span className="compact-label">{isOnline ? "利用可能" : "オフライン"}</span></span><button className="icon-button" type="button" aria-label="テーマ切替" onClick={() => setIsDark((value) => !value)}>{isDark ? "☼" : "◐"}</button></div></header>
-      <div className="workspace"><nav className="sidebar" aria-label="メインナビゲーション">{tabItems.map((item) => <button className={`nav-item ${activeTab === item.id ? "active" : ""}`} type="button" aria-current={activeTab === item.id ? "page" : undefined} key={item.id} onClick={() => setActiveTab(item.id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span>{item.label}</span>{item.id === "practice" && totalAttempts > 0 && <i className="nav-dot" aria-hidden="true" />}</button>)}<div className="sidebar-bottom"><p>教材バンク</p><strong>{problemBank.length}</strong><span>問題 / {Object.keys(conceptGuides).length}ガイド</span></div></nav><section className="main-content">{activeTab === "today" && renderToday()}{activeTab === "map" && renderMap()}{activeTab === "practice" && renderPractice()}{activeTab === "mock" && renderMock()}{activeTab === "settings" && renderSettings()}</section></div>
+      <div className="workspace"><nav className="sidebar" aria-label="メインナビゲーション">{tabItems.map((item) => <button className={`nav-item ${activeTab === item.id ? "active" : ""}`} type="button" aria-current={activeTab === item.id ? "page" : undefined} key={item.id} onClick={() => setActiveTab(item.id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span>{item.label}</span>{item.id === "practice" && totalAttempts > 0 && <i className="nav-dot" aria-hidden="true" />}</button>)}<div className="sidebar-bottom"><p>教材バンク</p><strong>{problemBank.length}</strong><span>{lessonModules.length}本編 / {Object.keys(conceptGuides).length}ガイド</span></div></nav><section className="main-content">{activeTab === "today" && renderToday()}{activeTab === "map" && renderMap()}{activeTab === "practice" && renderPractice()}{activeTab === "mock" && renderMock()}{activeTab === "settings" && renderSettings()}</section></div>
       {focusRunning && <button className="focus-running" type="button" aria-label={`集中タイマー ${formatTime(focusSeconds)}。詳細を開く`} onClick={() => setFocusOpen(true)}><span className="pulse-dot" />FOCUS <strong>{formatTime(focusSeconds)}</strong></button>}
       {focusOpen && <div className="modal-backdrop" role="presentation"><section ref={focusModalRef} className="focus-modal" role="dialog" aria-modal="true" aria-labelledby="focus-title" aria-describedby="focus-description"><button ref={modalCloseRef} className="modal-close" type="button" onClick={() => setFocusOpen(false)} aria-label="閉じる">×</button><p className="eyebrow accent">FOCUS MODE</p>{focusRunning ? <><h2 id="focus-title">計測中。画面は閉じてOK。</h2><p id="focus-description">STOPするまで自動終了しません。画面を離れた時間は別に記録します。</p><div className="focus-live"><strong>{formatTime(focusSeconds)}</strong><span>経過時間</span><small>{studySession ? `スマホを置いた時間 ${formatTime(sessionAwaySeconds(studySession, currentTime()))}` : ""}</small></div><div className="hero-actions"><button className="button button-secondary" type="button" onClick={() => setFocusOpen(false)}>戻る</button><button className="button button-danger" type="button" onClick={stopFocus}>STOPして記録</button></div></> : <><h2 id="focus-title">まずSTART。時間は自由。</h2><p id="focus-description">10・20・40分は目安です。選ばなくても始められ、STOPしたときだけ今日の証拠になります。</p><div className="duration-grid">{[10, 20, 40].map((minutes) => <button key={minutes} type="button" className={`duration-button ${focusTotalSeconds === minutes * 60 ? "selected" : ""}`} onClick={() => { setFocusTotalSeconds(minutes * 60); setFocusSeconds(0); }}><strong>{minutes}</strong><span>min 目安</span></button>)}</div><div className="focus-noise"><div><strong>ピンクノイズ</strong><span>{noiseOn ? "再生中" : "オフ"}</span></div><button className="toggle-button" type="button" aria-pressed={noiseOn} onClick={toggleNoise}><span className={noiseOn ? "toggle-knob on" : "toggle-knob"} /><span>{noiseOn ? "On" : "Off"}</span></button></div><button className="button button-primary wide" type="button" onClick={beginFocus}>STARTする <span>→</span></button></>}</section></div>}
       {sessionSummary && <div className="modal-backdrop" role="presentation"><section ref={summaryModalRef} className="summary-modal" role="dialog" aria-modal="true" aria-labelledby="summary-title" aria-describedby="summary-description"><button ref={summaryCloseRef} className="modal-close" type="button" onClick={() => setSessionSummary(null)} aria-label="閉じる">×</button><p className="eyebrow accent">SESSION COMPLETE</p><h2 id="summary-title">積み上げを記録した。</h2><p id="summary-description">今日は画面を見ていた時間ではなく、正味の集中時間だけを進捗に加えました。</p><div className="summary-numbers"><div><strong>{formatTime(sessionSummary.studySeconds)}</strong><span>正味集中</span></div><div><strong>{formatTime(sessionSummary.awaySeconds)}</strong><span>スマホを置いた時間</span></div></div>{sessionEvidence && <div className="session-evidence"><div><strong>{sessionEvidence.questions}</strong><span>解いた問題</span></div><div><strong>{Math.max(0, sessionEvidence.routeEnd - sessionEvidence.routeStart)}</strong><span>進んだ概念</span></div><div><strong>{sessionEvidence.routeStart} → {sessionEvidence.routeEnd}</strong><span>ルート</span></div></div>}<p className="summary-reassurance">進捗は戻りません。次は1問だけでOK。</p><button className="button button-primary wide" type="button" onClick={continueToNextPractice}>次の1問へ <span>→</span></button></section></div>}
