@@ -2,9 +2,13 @@
 
 import { type ChangeEvent, useEffect, useRef, useState } from "react";
 import conceptData from "@/data/math-concepts.json";
-import { problemBank, type Problem } from "./problem-bank";
-import { conceptGuides, type ConceptGuide } from "./content/concept-guides";
-import { lessonModules, type LessonModule } from "./content/lesson-modules";
+import { problemBank as baseProblemBank, type Problem } from "./problem-bank";
+import { conceptGuides as baseConceptGuides, type ConceptGuide } from "./content/concept-guides";
+import { bridgeGuides } from "./content/bridge-guides";
+import { lessonModules as baseLessonModules, type LessonModule } from "./content/lesson-modules";
+import { lessonModulesBatch02 } from "./content/lesson-modules-batch-02";
+import { lessonModulesBatch03 } from "./content/lesson-modules-batch-03";
+import { problemExpansionBatch01 } from "./content/problem-expansion-batch-01";
 import { clearProgress, loadProgress, saveProgress, type PersistedProgress } from "./storage";
 import {
   awaySeconds as sessionAwaySeconds,
@@ -43,12 +47,27 @@ function primaryConceptIdFor(problem: Problem) {
 
 const concepts = conceptData.concepts;
 const conceptById = new Map(concepts.map((concept) => [concept.id, concept]));
+const conceptGuides: Record<string, ConceptGuide> = { ...baseConceptGuides, ...bridgeGuides };
+const lessonModules = [...baseLessonModules, ...lessonModulesBatch02, ...lessonModulesBatch03];
+const problemBank = [...baseProblemBank, ...problemExpansionBatch01];
 const problemByConcept = new Map<string, Problem>();
+const problemsByConcept = new Map<string, Problem[]>();
 for (const problem of problemBank) {
+  for (const conceptId of problem.conceptIds) {
+    const related = problemsByConcept.get(conceptId) ?? [];
+    related.push(problem);
+    problemsByConcept.set(conceptId, related);
+  }
   const primaryConceptId = primaryConceptIdFor(problem);
   if (primaryConceptId && !problemByConcept.has(primaryConceptId)) problemByConcept.set(primaryConceptId, problem);
 }
 const lessonByConcept = new Map<string, LessonModule>(lessonModules.map((lesson) => [lesson.conceptId, lesson]));
+const problemKindOrder: Record<Problem["kind"], number> = { quick: 0, standard: 1, transfer: 2 };
+
+function problemForConcept(conceptId: string, masteryLevel = 0) {
+  const candidates = [...(problemsByConcept.get(conceptId) ?? [])].sort((a, b) => problemKindOrder[a.kind] - problemKindOrder[b.kind] || a.id.localeCompare(b.id));
+  return candidates[Math.min(masteryLevel, Math.max(0, candidates.length - 1))] ?? problemByConcept.get(conceptId);
+}
 const conceptOrder = new Map(
   conceptData.design.recommended_order.flatMap((phase, phaseIndex) => phase.ids.map((id, idIndex) => [id, phaseIndex * 100 + idIndex] as const)),
 );
@@ -512,7 +531,7 @@ export default function Home() {
 
   function openPracticeFor(concept: Concept) {
     setSelectedConceptId(concept.id);
-    const problem = problemByConcept.get(concept.id);
+    const problem = problemForConcept(concept.id, mastery[concept.id] ?? 0);
     if (!problem) return;
     setPracticeProblemId(problem.id);
     setPracticePhase("lesson");
@@ -901,6 +920,7 @@ export default function Home() {
             const level = mastery[concept.id] ?? 0;
             const unlocked = isUnlocked(concept);
             const available = hasPractice(concept.id);
+            const problemCount = problemsByConcept.get(concept.id)?.length ?? 0;
             const guide = conceptGuides[concept.id];
             const expanded = expandedConceptId === concept.id;
             return (
@@ -908,7 +928,7 @@ export default function Home() {
                 <button className="concept-row-main" type="button" aria-expanded={expanded} onClick={() => { setSelectedConceptId(concept.id); setExpandedConceptId(expanded ? null : concept.id); }}>
                   <span className="concept-id">{concept.id}</span><span className="concept-name">{concept.title}</span><span className="concept-course">{courseLabels[concept.course]}</span><span className="mastery-dots" aria-label={`レベル${level}`}>{[0, 1, 2, 3].map((dot) => <i className={dot < level ? "filled" : ""} key={dot} />)}</span><span className={`state-label ${unlocked ? "ready" : "locked-label"}`}>{unlocked ? levelLabel(level) : "前提待ち"}</span><span className="chevron">{expanded ? "−" : "+"}</span>
                 </button>
-                {expanded && <div className="concept-detail"><div><p>{concept.target}</p>{guide && <div className="concept-guide"><p><strong>意味</strong>{guide.definition}</p><p><strong>一手</strong>{guide.firstMove}</p><p><strong>罠</strong>{guide.trap}</p></div>}<div className="tag-row">{concept.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div>{concept.requires.length > 0 && <small>前提：{concept.requires.map((id) => conceptById.get(id)?.title ?? id).join(" / ")}</small>}</div><div className="concept-detail-actions">{guide && <button className="button button-ghost button-small" type="button" onClick={() => markGuideRead(concept)}>{guideSeen[concept.id] ? "ガイド済み" : "解説を読んだ"}</button>}<button className="button button-small" type="button" disabled={!unlocked || !available} onClick={() => openPracticeFor(concept)}>{!unlocked ? "前提を先に" : available ? "この概念を練習" : "問題準備中"} <span>→</span></button></div></div>}
+                {expanded && <div className="concept-detail"><div><p>{concept.target}</p>{guide && <div className="concept-guide"><p><strong>意味</strong>{guide.definition}</p><p><strong>一手</strong>{guide.firstMove}</p><p><strong>罠</strong>{guide.trap}</p></div>}<div className="tag-row">{concept.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div>{concept.requires.length > 0 && <small>前提：{concept.requires.map((id) => conceptById.get(id)?.title ?? id).join(" / ")}</small>}<small>この概念の問題：{problemCount}問</small></div><div className="concept-detail-actions">{guide && <button className="button button-ghost button-small" type="button" onClick={() => markGuideRead(concept)}>{guideSeen[concept.id] ? "ガイド済み" : "解説を読んだ"}</button>}<button className="button button-small" type="button" disabled={!unlocked || !available} onClick={() => openPracticeFor(concept)}>{!unlocked ? "前提を先に" : available ? "この概念を練習" : "問題準備中"} <span>→</span></button></div></div>}
               </div>
             );
           })}
@@ -1038,7 +1058,7 @@ export default function Home() {
           <article className="setting-card panel-card"><div><p className="eyebrow">IOS START</p><h3>ホーム画面に追加</h3><p>Safariの共有ボタンから「ホーム画面に追加」。追加後もオフラインで使えます。</p></div><span className="setting-hint">Safari → 共有 → 追加</span></article>
           <article className="setting-card panel-card danger-card"><div><p className="eyebrow">RESET</p><h3>最初からやり直す</h3><p>概念の到達度と正答履歴を消去する。</p></div><button className="button button-danger" type="button" onClick={resetData}>記録を消去</button></article>
         </section>
-        <section className="about-card panel-card"><div className="about-mark">Σ</div><div><p className="eyebrow">ABOUT THIS BUILD</p><h3>共テ数学60 / v0.4</h3><p>高校数学 I・A・II・B・C・III を320概念に分解したローカルファーストPWA。共テ対象225概念に{lessonModules.length}本の本編レッスン、{Object.keys(conceptGuides).length}件の1分ガイド、{problemBank.length}問を接続し、外部教材なしで「解説 → 例題 → 確認問題」へ進める。</p></div></section>
+        <section className="about-card panel-card"><div className="about-mark">Σ</div><div><p className="eyebrow">ABOUT THIS BUILD</p><h3>共テ数学60 / v0.5 · 4X BATCH 01</h3><p>高校数学 I・A・II・B・C・III を320概念に分解したローカルファーストPWA。共テ225概念と橋渡し21概念に{lessonModules.length}本の本編レッスン、{Object.keys(conceptGuides).length}件の短編ガイド、{problemBank.length}問を接続し、外部教材なしで「解説 → 例題 → 確認問題」へ進める。</p></div></section>
       </div>
     );
   }
