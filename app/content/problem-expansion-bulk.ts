@@ -9,7 +9,6 @@ import { fullCourseGuides } from "./full-course.ts";
  */
 type Concept = (typeof conceptData.concepts)[number];
 type Kind = Problem["kind"];
-type GuideField = "definition" | "firstMove" | "trap";
 type Spec = {
   title: string;
   prompt: string;
@@ -31,47 +30,56 @@ function choose(correct: string, distractors: string[], seed: number) {
   return { options, answer: options.indexOf(correct) };
 }
 
-function pickDistractors(field: GuideField, correct: string, seed: number) {
-  const pool = targetConcepts
-    .map((concept) => guides[concept.id]?.[field])
-    .filter((value): value is string => typeof value === "string" && value.length > 0 && value !== correct);
-  const unique = [...new Set(pool)];
-  const selected: string[] = [];
-  for (let offset = 0; selected.length < 3 && offset < unique.length * 2; offset += 1) {
-    const candidate = unique[(seed * 11 + offset * 7) % unique.length];
-    if (candidate && !selected.includes(candidate)) selected.push(candidate);
+function distractorsFor(concept: Concept, variant: number) {
+  if (variant === 0) {
+    return [
+      `「${concept.title}」を、条件や定義を確認せず数値だけ計算すること。`,
+      `「${concept.title}」は、問題に出た記号の名前をそのまま答えること。`,
+      `「${concept.title}」では、どの問題にも同じ公式を条件なしで使うこと。`,
+    ];
   }
-  return selected.slice(0, 3);
+  if (variant === 1) {
+    return [
+      "問題文の条件を読まず、記憶した公式をいきなり適用する。",
+      "答えの選択肢から逆算し、定義や条件を確認しない。",
+      "必要な量を整理せず、計算結果を最後に推測する。",
+    ];
+  }
+  return [
+    "定義と条件を確認してから、対象概念に沿って処理する。",
+    "必要な条件を式・図・表に整理し、答えを検算する。",
+    "別の公式を決め打ちせず、問題の対象概念との対応を確かめる。",
+  ];
 }
 
-function specFor(concept: Concept, index: number, variant: number): Spec {
+function specFor(concept: Concept, variant: number): Spec {
   const guide = guides[concept.id];
-  const field: GuideField = variant === 0 ? "definition" : variant === 1 ? "firstMove" : "trap";
-  const correct = guide[field];
-  const distractors = pickDistractors(field, correct, index + variant + 1);
   if (variant === 0) {
+    const correct = guide.definition;
     return {
       title: "意味を定義から確認",
       prompt: `「${concept.id} ${concept.title}」について、意味・定義として正しいものはどれか。`,
       correct,
-      distractors,
+      distractors: distractorsFor(concept, variant),
       explanation: `この概念の定義は「${correct}」。まず何を表す概念かを固定してから計算へ進む。`,
     };
   }
   if (variant === 1) {
+    const correct = guide.firstMove;
     return {
       title: "最初の一手を選ぶ",
       prompt: `「${concept.id} ${concept.title}」を使う問題で、最初の一手として最も適切なものはどれか。`,
       correct,
-      distractors,
+      distractors: distractorsFor(concept, variant),
       explanation: `最初に行うのは「${correct}」。条件を整理してから式・図・表へ移す。`,
     };
   }
+  const correct = guide.trap;
   return {
     title: "典型的な罠を見抜く",
     prompt: `「${concept.id} ${concept.title}」で起こりやすい誤り・注意点として正しいものはどれか。`,
     correct,
-    distractors,
+    distractors: distractorsFor(concept, variant),
     explanation: `注意点は「${correct}」。答えを出した後も、この条件を使って検算する。`,
   };
 }
@@ -93,5 +101,5 @@ function makeProblem(concept: Concept, index: number, variant: number, spec: Spe
 }
 
 export const problemExpansionBulk: Problem[] = targetConcepts.flatMap((concept, index) =>
-  kinds.map((_, variant) => makeProblem(concept, index, variant, specFor(concept, index, variant))),
+  kinds.map((_, variant) => makeProblem(concept, index, variant, specFor(concept, variant))),
 );

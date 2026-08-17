@@ -278,11 +278,11 @@ async function withWriteLock<T>(task: () => Promise<T>): Promise<T> {
       }
       await wait(30);
     }
-    return task();
+    return await task();
   } catch {
     // Some browsers expose localStorage but reject access in private or
     // restricted contexts. The IndexedDB/local in-memory fallbacks still work.
-    return task();
+    return await task();
   } finally {
     try {
       if (token && window.localStorage.getItem(WRITE_LOCK_KEY) === token) window.localStorage.removeItem(WRITE_LOCK_KEY);

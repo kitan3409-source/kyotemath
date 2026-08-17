@@ -7,6 +7,7 @@ import {
   eligibleSectionIds,
   examQuestions,
   isExamExpired,
+  normalizeExamHistory,
   normalizeExamSession,
   scoreExam,
 } from "../app/exam-engine.ts";
@@ -87,6 +88,19 @@ test("exam sessions reject malformed deadlines and duplicate or unknown optional
   assert.equal(normalizeExamSession({ ...session, selectedOptionalSectionIds: ["IIBC-02", "IIBC-02", "unknown", "IIBC-03", "IIBC-04"] })?.selectedOptionalSectionIds.length, 3);
   assert.equal(normalizeExamSession({ ...session, selectedOptionalSectionIds: ["IIBC-02", "IIBC-03"] }), undefined);
   assert.equal(normalizeExamSession({ ...session, paper: "math1a", selectedOptionalSectionIds: ["IIBC-02", "IIBC-03", "IIBC-04"] }), undefined);
+});
+
+test("exam normalizers reject unknown forms, zero-length sessions, and fake unanswered IDs", () => {
+  const form = buildExamForms(syntheticBank())[0];
+  const session = createExamSession(form, new Date(Date.now() - 60_000));
+  assert.equal(normalizeExamSession({ ...session, formId: "IA-F9" }), undefined);
+  assert.equal(normalizeExamSession({ ...session, deadlineAt: session.startedAt }), undefined);
+
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  const submittedAt = new Date(Date.now() - 30_000).toISOString();
+  const result = scoreExam(form, {}, [], startedAt, submittedAt, false);
+  assert.equal(normalizeExamHistory([result]).length, 1);
+  assert.equal(normalizeExamHistory([{ ...result, unanswered: [`${form.id}-fake`] }]).length, 0);
 });
 
 test("induction is visible in follow-up prompts and option selection is not duplicated", () => {

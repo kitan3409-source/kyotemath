@@ -449,8 +449,8 @@ export function normalizeExamSession(value: unknown, nowMs = Number.POSITIVE_INF
   const deadlineAt = isValidIsoDate(value.deadlineAt) ? Date.parse(value.deadlineAt) : Number.NaN;
   const submittedAt = typeof value.submittedAt === "string" && isValidIsoDate(value.submittedAt) ? Date.parse(value.submittedAt) : Number.NaN;
   const safeNow = Number.isFinite(nowMs) ? nowMs : Number.POSITIVE_INFINITY;
-  if (!Number.isFinite(startedAt) || !Number.isFinite(deadlineAt) || deadlineAt < startedAt || startedAt > safeNow) return undefined;
-  if ((value.paper === "math1a" && !value.formId.startsWith("IA-")) || (value.paper === "math2bc" && !value.formId.startsWith("IIBC-")) || (value.paper === "math3" && !value.formId.startsWith("MATH3-"))) return undefined;
+  const formIdPattern = value.paper === "math1a" ? /^IA-F[1-3]$/ : value.paper === "math2bc" ? /^IIBC-F[1-3]$/ : /^MATH3-F[1-3]$/;
+  if (!formIdPattern.test(value.formId) || !Number.isFinite(startedAt) || !Number.isFinite(deadlineAt) || deadlineAt <= startedAt || startedAt > safeNow) return undefined;
   if (value.active === value.finished) return undefined;
   if (value.finished && (!Number.isFinite(submittedAt) || submittedAt < startedAt || submittedAt > safeNow)) return undefined;
   const knownOptionalIds = value.paper === "math2bc" ? new Set(["IIBC-02", "IIBC-03", "IIBC-04", "IIBC-05"]) : new Set<string>();
@@ -494,18 +494,34 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
     const score = typeof entry.score === "number" ? entry.score : Number.NaN;
     const percentage = typeof entry.percentage === "number" ? entry.percentage : Number.NaN;
     const elapsedSeconds = typeof entry.elapsedSeconds === "number" ? entry.elapsedSeconds : Number.NaN;
-    if (!Number.isSafeInteger(score) || score < 0 || score > totalPoints || entry.totalPoints !== totalPoints
-      || !Number.isSafeInteger(percentage) || percentage < 0 || percentage > 100 || percentage !== Math.round((score / totalPoints) * 100)
-      || !Number.isSafeInteger(elapsedSeconds) || elapsedSeconds < 0 || elapsedSeconds > EXAM_CONFIG[entry.paper].durationSeconds
-      || typeof entry.timedOut !== "boolean" || elapsedSeconds !== Math.max(0, Math.round((submittedAt - startedAt) / 1000))
-      || !Array.isArray(entry.unanswered) || new Set(entry.unanswered).size !== entry.unanswered.length
-      || !entry.unanswered.every((id) => typeof id === "string" && id.startsWith(`${entry.formId}-`))
-      || !isRecord(entry.bySection)) return false;
     const expectedSectionIds = entry.paper === "math1a"
       ? ["IA-01", "IA-02", "IA-03", "IA-04"]
       : entry.paper === "math2bc"
         ? ["IIBC-01", ...selectedIds]
         : ["M3-01", "M3-02", "M3-03", "M3-04"];
+    const sectionCounts: Record<string, number> = entry.paper === "math1a"
+      ? { "IA-01": 5, "IA-02": 5, "IA-03": 5, "IA-04": 5 }
+      : entry.paper === "math2bc"
+        ? Object.fromEntries(expectedSectionIds.map((id) => [id, id === "IIBC-01" ? 4 : 2]))
+        : { "M3-01": 5, "M3-02": 5, "M3-03": 5, "M3-04": 5 };
+    const validQuestionId = (id: unknown) => {
+      if (typeof id !== "string" || !id.startsWith(`${entry.formId}-`)) return false;
+      const suffix = id.slice(`${entry.formId}-`.length);
+      const separator = suffix.lastIndexOf("-");
+      if (separator <= 0) return false;
+      const sectionId = suffix.slice(0, separator);
+      const questionNumberText = suffix.slice(separator + 1);
+      const questionNumber = Number(questionNumberText);
+      return Boolean(sectionId && /^0\d$/.test(questionNumberText) && expectedSectionIds.includes(sectionId)
+        && Number.isInteger(questionNumber) && questionNumber >= 1 && questionNumber <= sectionCounts[sectionId]);
+    };
+    if (!Number.isSafeInteger(score) || score < 0 || score > totalPoints || entry.totalPoints !== totalPoints
+      || !Number.isSafeInteger(percentage) || percentage < 0 || percentage > 100 || percentage !== Math.round((score / totalPoints) * 100)
+      || !Number.isSafeInteger(elapsedSeconds) || elapsedSeconds < 0 || elapsedSeconds > EXAM_CONFIG[entry.paper].durationSeconds
+      || typeof entry.timedOut !== "boolean" || elapsedSeconds !== Math.max(0, Math.round((submittedAt - startedAt) / 1000))
+      || !Array.isArray(entry.unanswered) || new Set(entry.unanswered).size !== entry.unanswered.length
+      || !entry.unanswered.every(validQuestionId)
+      || !isRecord(entry.bySection)) return false;
     const actualSectionIds = Object.keys(entry.bySection);
     if (actualSectionIds.length !== expectedSectionIds.length || !expectedSectionIds.every((id) => actualSectionIds.includes(id))) return false;
     let sectionPoints = 0;
