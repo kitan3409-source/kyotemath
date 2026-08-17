@@ -160,14 +160,15 @@ export function normalizeImportedPracticeSnapshot(value: unknown): PracticeResum
   };
 }
 
-export function normalizeErrorHistory(value: unknown): ErrorHistory {
+export function normalizeErrorHistory(value: unknown, nowMs = Date.now()): ErrorHistory {
   if (!isRecord(value)) return {};
+  const safeNow = Number.isFinite(nowMs) ? nowMs : Date.now();
   const history: ErrorHistory = {};
   for (const [conceptId, rawEntries] of Object.entries(value)) {
     if (!Array.isArray(rawEntries)) continue;
     const entries: ErrorRecord[] = [];
     for (const rawEntry of rawEntries) {
-      if (!isRecord(rawEntry) || typeof rawEntry.problemId !== "string" || !isErrorCause(rawEntry.cause) || !isValidIsoDate(rawEntry.at)) continue;
+      if (!isRecord(rawEntry) || typeof rawEntry.problemId !== "string" || !isErrorCause(rawEntry.cause) || !isValidIsoDate(rawEntry.at) || Date.parse(rawEntry.at) > safeNow) continue;
       entries.push({ problemId: rawEntry.problemId, cause: rawEntry.cause, at: rawEntry.at });
     }
     if (entries.length > 0) history[conceptId] = entries.slice(-20);

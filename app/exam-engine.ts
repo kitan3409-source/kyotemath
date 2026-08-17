@@ -471,9 +471,9 @@ export function normalizeExamSession(value: unknown, nowMs = Number.POSITIVE_INF
   };
 }
 
-export function normalizeExamHistory(value: unknown): ExamResult[] {
+export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamResult[] {
   if (!Array.isArray(value)) return [];
-  const now = Date.now();
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
   return value.filter((entry): entry is ExamResult => {
     if (!isRecord(entry) || typeof entry.formId !== "string" || (entry.paper !== "math1a" && entry.paper !== "math2bc" && entry.paper !== "math3")) return false;
     const startedAt = isValidIsoDate(entry.startedAt) ? Date.parse(entry.startedAt) : Number.NaN;

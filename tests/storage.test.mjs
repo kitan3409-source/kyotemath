@@ -6,6 +6,7 @@ import { mergeProgress, normalizeProgress } from "../app/storage.ts";
 const empty = { mastery: {}, attempts: {}, studyDates: [], studySeconds: 0, awaySeconds: 0, guideSeen: {}, examHistory: [] };
 
 test("progress normalization rejects invalid clocks without poisoning merge order", () => {
+  const past = new Date(Date.now() - 1000).toISOString();
   const normalized = normalizeProgress({
     ...empty,
     mastery: { "I-01": 9, bad: "x" },
@@ -14,10 +15,10 @@ test("progress normalization rejects invalid clocks without poisoning merge orde
       "I-01": {
         correct: 2,
         total: 3,
-        lastAt: "2026-08-18T00:00:00.000Z",
+        lastAt: past,
         evidence: [
           { problemId: "p1", kind: "quick", delayed: false, correct: true, answeredAt: "not-a-date", source: "observed" },
-          { problemId: "p2", kind: "standard", delayed: false, correct: false, answeredAt: "2026-08-18T00:00:00.000Z", source: "observed" },
+          { problemId: "p2", kind: "standard", delayed: false, correct: false, answeredAt: past, source: "observed" },
           { problemId: "p3", kind: "transfer", delayed: false, correct: true, answeredAt: "2026-02-31T00:00:00.000Z", source: "observed" },
         ],
       },
@@ -25,10 +26,34 @@ test("progress normalization rejects invalid clocks without poisoning merge orde
   });
   assert.equal(normalized?.updatedAt, undefined);
   assert.equal(normalized?.mastery["I-01"], 4);
-  assert.deepEqual(normalized?.attempts["I-01"]?.evidence, [{ problemId: "p2", kind: "standard", delayed: false, correct: false, answeredAt: "2026-08-18T00:00:00.000Z", source: "observed" }]);
+  assert.deepEqual(normalized?.attempts["I-01"]?.evidence, [{ problemId: "p2", kind: "standard", delayed: false, correct: false, answeredAt: past, source: "observed" }]);
   const older = { ...empty, updatedAt: "2026-08-17T00:00:00.000Z", mastery: { "I-01": 1 } };
   const newer = { ...empty, updatedAt: "2026-08-18T00:00:00.000Z", mastery: { "I-01": 2 } };
   assert.equal(mergeProgress(older, newer).mastery["I-01"], 2);
+});
+
+test("progress normalization rejects future evidence and reset metadata", () => {
+  const now = Date.parse("2026-08-18T12:00:00.000Z");
+  const normalized = normalizeProgress({
+    ...empty,
+    updatedAt: "2099-01-01T00:00:00.000Z",
+    clearedAt: "2099-01-01T00:00:00.000Z",
+    errorHistory: {
+      "I-01": [{ problemId: "p1", cause: "careless", at: "2099-01-01T00:00:00.000Z" }],
+    },
+    attempts: {
+      "I-01": {
+        correct: 1,
+        total: 1,
+        lastAt: "2099-01-01T00:00:00.000Z",
+        evidence: [{ problemId: "p1", kind: "quick", delayed: false, correct: true, answeredAt: "2099-01-01T00:00:00.000Z", source: "observed" }],
+      },
+    },
+  }, now);
+  assert.equal(normalized?.updatedAt, undefined);
+  assert.equal(normalized?.clearedAt, undefined);
+  assert.deepEqual(normalized?.attempts, {});
+  assert.deepEqual(normalized?.errorHistory, {});
 });
 
 test("a newer reset tombstone wins over a stale tab snapshot", () => {

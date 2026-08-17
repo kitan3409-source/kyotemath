@@ -79,9 +79,11 @@ function parseStoredJson(raw: string | null, fallback: unknown) {
   }
 }
 
-export function normalizeProgress(value: unknown): PersistedProgress | null {
+export function normalizeProgress(value: unknown, nowMs = Date.now()): PersistedProgress | null {
   if (!isRecord(value) || !isRecord(value.mastery) || !isRecord(value.attempts)) return null;
-  const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(new Date());
+  const safeNow = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const notFuture = (date: unknown): date is string => isValidIsoDate(date) && Date.parse(date) <= safeNow;
+  const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(new Date(safeNow));
   const mastery: Record<string, number> = {};
   for (const [id, rawLevel] of Object.entries(value.mastery)) {
     if (typeof rawLevel === "number" && Number.isFinite(rawLevel)) mastery[id] = Math.min(4, Math.max(0, Math.round(rawLevel)));
@@ -92,7 +94,7 @@ export function normalizeProgress(value: unknown): PersistedProgress | null {
     const correct = typeof rawAttempt.correct === "number" && Number.isFinite(rawAttempt.correct) ? Math.max(0, Math.floor(rawAttempt.correct)) : 0;
     const total = typeof rawAttempt.total === "number" && Number.isFinite(rawAttempt.total) ? Math.max(correct, Math.floor(rawAttempt.total)) : 0;
     if (total === 0) continue;
-    const lastAt = validTime(rawAttempt.lastAt) ? rawAttempt.lastAt : undefined;
+    const lastAt = notFuture(rawAttempt.lastAt) ? rawAttempt.lastAt : undefined;
     if (!lastAt) continue;
     const dueAt = validTime(rawAttempt.dueAt) ? rawAttempt.dueAt : undefined;
     const streak = typeof rawAttempt.streak === "number" && Number.isFinite(rawAttempt.streak) ? Math.max(0, Math.floor(rawAttempt.streak)) : undefined;
@@ -104,7 +106,7 @@ export function normalizeProgress(value: unknown): PersistedProgress | null {
       ? { cause: rawAttempt.retry.cause, problemId: rawAttempt.retry.problemId, scheduledAt: rawAttempt.retry.scheduledAt }
       : undefined;
     const evidence = Array.isArray(rawAttempt.evidence)
-      ? rawAttempt.evidence.filter((entry): entry is AttemptEvidence => isRecord(entry) && typeof entry.problemId === "string" && (entry.kind === "quick" || entry.kind === "standard" || entry.kind === "transfer") && typeof entry.delayed === "boolean" && typeof entry.correct === "boolean" && isValidIsoDate(entry.answeredAt) && (entry.source === "observed" || entry.source === "imported")).slice(-60)
+      ? rawAttempt.evidence.filter((entry): entry is AttemptEvidence => isRecord(entry) && typeof entry.problemId === "string" && (entry.kind === "quick" || entry.kind === "standard" || entry.kind === "transfer") && typeof entry.delayed === "boolean" && typeof entry.correct === "boolean" && notFuture(entry.answeredAt) && (entry.source === "observed" || entry.source === "imported")).slice(-60)
       : undefined;
     attempts[id] = { correct: Math.min(correct, total), total, lastAt, dueAt, streak, lastErrorCause, retry, evidence };
   }
@@ -120,11 +122,11 @@ export function normalizeProgress(value: unknown): PersistedProgress | null {
     }
   }
   const practice = normalizePracticeSnapshot(value.practice);
-  const errorHistory = normalizeErrorHistory(value.errorHistory);
-  const examSession = normalizeExamSession(value.examSession, Date.now());
-  const examHistory = normalizeExamHistory(value.examHistory);
-  const updatedAt = validTime(value.updatedAt) ? value.updatedAt : undefined;
-  const clearedAt = validTime(value.clearedAt) ? value.clearedAt : undefined;
+  const errorHistory = normalizeErrorHistory(value.errorHistory, safeNow);
+  const examSession = normalizeExamSession(value.examSession, safeNow);
+  const examHistory = normalizeExamHistory(value.examHistory, safeNow);
+  const updatedAt = notFuture(value.updatedAt) ? value.updatedAt : undefined;
+  const clearedAt = notFuture(value.clearedAt) ? value.clearedAt : undefined;
   return { mastery, attempts, studyDates: [...new Set(studyDates)].slice(-180), studySeconds, awaySeconds, guideSeen, practice, errorHistory, examSession, examHistory, updatedAt, clearedAt };
 }
 

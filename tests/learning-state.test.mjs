@@ -81,15 +81,16 @@ test("practice snapshots keep valid resume data and reject invalid phases", () =
 });
 
 test("error history drops malformed entries and keeps a bounded per-concept log", () => {
+  const past = new Date(Date.now() - 1000).toISOString();
   const history = normalizeErrorHistory({
     "I-01": [
-      { problemId: "Q-I01-01", cause: "concept_gap", at: "2026-08-18T00:00:00.000Z" },
-      { problemId: "Q-I01-02", cause: "not-a-cause", at: "2026-08-18T00:00:00.000Z" },
+      { problemId: "Q-I01-01", cause: "concept_gap", at: past },
+      { problemId: "Q-I01-02", cause: "not-a-cause", at: past },
       { problemId: "Q-I01-03", cause: "misread", at: "not-a-date" },
     ],
   });
   assert.deepEqual(history, {
-    "I-01": [{ problemId: "Q-I01-01", cause: "concept_gap", at: "2026-08-18T00:00:00.000Z" }],
+    "I-01": [{ problemId: "Q-I01-01", cause: "concept_gap", at: past }],
   });
 
   let appended = {};

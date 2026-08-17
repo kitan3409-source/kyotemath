@@ -132,15 +132,17 @@ function masteryFromAttempts(source: Record<string, Attempt>) {
 }
 
 function effectiveDueAtForAttempt(attempt: Attempt | undefined) {
-  if (attempt?.dueAt && isValidIsoDate(attempt.dueAt)) return attempt.dueAt;
+  const storedDueAt = attempt?.dueAt && isValidIsoDate(attempt.dueAt) ? attempt.dueAt : undefined;
   const transfer = (attempt?.evidence ?? [])
     .filter((entry) => entry.correct && !entry.delayed && entry.kind === "transfer" && isValidIsoDate(entry.answeredAt))
     .sort((left, right) => Date.parse(left.answeredAt) - Date.parse(right.answeredAt))
     .at(-1);
-  if (!transfer) return undefined;
+  if (!transfer) return storedDueAt;
   const transferAt = Date.parse(transfer.answeredAt);
-  if (!Number.isFinite(transferAt) || transferAt > Date.now()) return undefined;
-  return new Date(transferAt + DELAYED_RETEST_WAIT_MS).toISOString();
+  if (!Number.isFinite(transferAt) || transferAt > Date.now()) return storedDueAt;
+  const evidenceDueAt = new Date(transferAt + DELAYED_RETEST_WAIT_MS).toISOString();
+  if (!storedDueAt || Date.parse(storedDueAt) < Date.parse(evidenceDueAt)) return evidenceDueAt;
+  return storedDueAt;
 }
 
 function sanitizePracticeResume(
@@ -898,10 +900,11 @@ export default function Home() {
       const dueAt = dueAtForConcept(concept.id);
       return Boolean(dueAt && Date.parse(dueAt) <= now);
     }).sort((a, b) => (conceptOrder.get(a.id) ?? 9999) - (conceptOrder.get(b.id) ?? 9999))[0];
-    const currentLevel = currentConcept ? mastery[currentConcept.id] ?? 0 : 4;
-    const currentDueAt = currentConcept ? dueAtForConcept(currentConcept.id) : undefined;
+    const currentCandidate = currentConcept && isUnlocked(currentConcept) && hasPractice(currentConcept.id) ? currentConcept : undefined;
+    const currentLevel = currentCandidate ? mastery[currentCandidate.id] ?? 0 : 4;
+    const currentDueAt = currentCandidate ? dueAtForConcept(currentCandidate.id) : undefined;
     const currentDue = Boolean(currentDueAt && Date.parse(currentDueAt) <= now);
-    const canContinueCurrent = currentConcept && (currentLevel < 3 || (currentLevel === 3 && currentDue));
+    const canContinueCurrent = Boolean(currentCandidate && (currentLevel < 3 || (currentLevel === 3 && currentDue)));
     const eligibleCandidates = candidates.filter((concept) => {
       const level = mastery[concept.id] ?? 0;
       const dueAt = dueAtForConcept(concept.id);
@@ -909,7 +912,7 @@ export default function Home() {
       return level < 3 || (level === 3 && due);
     }).sort((a, b) => (conceptOrder.get(a.id) ?? 9999) - (conceptOrder.get(b.id) ?? 9999));
     const nextConceptCandidate = dueConcept
-      ?? (canContinueCurrent ? currentConcept : eligibleCandidates[0] ?? currentConcept ?? candidates[0]);
+      ?? (canContinueCurrent ? currentCandidate : eligibleCandidates[0] ?? currentCandidate ?? candidates[0]);
     const nextLevel = nextConceptCandidate ? mastery[nextConceptCandidate.id] ?? 0 : 0;
     const nextDueAt = nextConceptCandidate ? dueAtForConcept(nextConceptCandidate.id) : undefined;
     const delayed = Boolean(nextLevel === 3 && nextDueAt && Date.parse(nextDueAt) <= now);
