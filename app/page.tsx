@@ -274,13 +274,15 @@ function normalizeErrorHistoryForContent(value: unknown): ErrorHistory {
 
 function normalizeImportedProgress(value: unknown): PersistedProgress | null {
   if (!isRecord(value) || !isRecord(value.mastery) || !isRecord(value.attempts)) return null;
+  const safeNow = Date.now();
+  const notFuture = (date: unknown): date is string => isValidIsoDate(date) && Date.parse(date) <= safeNow;
   const nextAttempts: PersistedProgress["attempts"] = {};
   for (const [id, rawAttempt] of Object.entries(value.attempts)) {
     if (!conceptById.has(id) || !isRecord(rawAttempt)) continue;
     const correct = typeof rawAttempt.correct === "number" ? Math.max(0, Math.floor(rawAttempt.correct)) : 0;
     const total = typeof rawAttempt.total === "number" ? Math.max(correct, Math.floor(rawAttempt.total)) : 0;
     if (total === 0) continue;
-    const lastAt = isValidIsoDate(rawAttempt.lastAt) ? rawAttempt.lastAt : undefined;
+    const lastAt = notFuture(rawAttempt.lastAt) ? rawAttempt.lastAt : undefined;
     if (!lastAt) continue;
     const dueAt = isValidIsoDate(rawAttempt.dueAt) ? rawAttempt.dueAt : undefined;
     const streak = typeof rawAttempt.streak === "number" ? Math.max(0, Math.floor(rawAttempt.streak)) : undefined;
@@ -294,7 +296,7 @@ function normalizeImportedProgress(value: unknown): PersistedProgress | null {
       ? { cause: rawRetry.cause, problemId: rawRetry.problemId, scheduledAt: rawRetry.scheduledAt }
       : undefined;
     const evidence = Array.isArray(rawAttempt.evidence)
-      ? rawAttempt.evidence.filter((entry): entry is AttemptEvidence => isRecord(entry) && typeof entry.problemId === "string" && problemBank.some((problem) => problem.id === entry.problemId) && (entry.kind === "quick" || entry.kind === "standard" || entry.kind === "transfer") && typeof entry.delayed === "boolean" && typeof entry.correct === "boolean" && isValidIsoDate(entry.answeredAt)).map((entry) => ({ ...entry, source: "imported" as const })).slice(-60)
+      ? rawAttempt.evidence.filter((entry): entry is AttemptEvidence => isRecord(entry) && typeof entry.problemId === "string" && problemBank.some((problem) => problem.id === entry.problemId) && (entry.kind === "quick" || entry.kind === "standard" || entry.kind === "transfer") && typeof entry.delayed === "boolean" && typeof entry.correct === "boolean" && notFuture(entry.answeredAt)).map((entry) => ({ ...entry, source: "imported" as const })).slice(-60)
       : undefined;
     nextAttempts[id] = { correct: Math.min(correct, total), total, lastAt, dueAt, streak, lastErrorCause, retry, evidence };
   }

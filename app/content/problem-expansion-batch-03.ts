@@ -302,7 +302,7 @@ export const problemExpansionBatch03: Problem[] = [
     title: "ベクトルを三角形の面積へ読み替える",
     prompt: "|u|=4, |v|=5で、uとvのなす角が30°のとき、uとvが作る三角形の面積はどれか。",
     options: ["5", "10", "20", "40"],
-    answer: 1,
+    answer: 0,
     explanation: "三角形の面積は(1/2)|u||v|sin30°=(1/2)×4×5×(1/2)=5。",
     kind: "quick",
     estimatedSeconds: 60,

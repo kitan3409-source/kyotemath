@@ -38,6 +38,11 @@ for (const concept of concepts) {
 
 const promptOwners = new Map();
 for (const problem of problemBank) {
+  if (problem.id.startsWith("X4-B")) {
+    const [conceptId] = problem.conceptIds;
+    if (!conceptId || problem.conceptIds.length !== 1 || !problem.prompt.includes(conceptId)) errors.push(`${problem.id}: bulk problem is not explicitly tied to one concept`);
+    if (!problem.options.includes(problem.options[problem.answer]) || !problem.explanation.includes(problem.options[problem.answer])) errors.push(`${problem.id}: bulk explanation does not name its correct option`);
+  }
   const owners = promptOwners.get(problem.prompt) ?? [];
   owners.push(problem.id);
   promptOwners.set(problem.prompt, owners);
