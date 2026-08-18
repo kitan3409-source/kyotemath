@@ -1,6 +1,7 @@
 import fs from "node:fs";
 
 const page = fs.readFileSync("app/page.tsx", "utf8");
+const examEngine = fs.readFileSync("app/exam-engine.ts", "utf8");
 const errors = [];
 
 const requiredSourceMarkers = [
@@ -15,9 +16,17 @@ for (const [label, marker] of requiredSourceMarkers) {
   if (!page.includes(marker)) errors.push(`${label}: missing implementation marker`);
 }
 
+const requiredExamEngineMarkers = [
+  ["score stores pre-submit review evidence", "explanationViewedBeforeSubmit: false"],
+  ["G5 rejects missing review evidence", "提出前の解説非閲覧記録がありません。"],
+];
+for (const [label, marker] of requiredExamEngineMarkers) {
+  if (!examEngine.includes(marker)) errors.push(`${label}: missing implementation marker`);
+}
+
 const result = {
   ok: errors.length === 0,
-  checks: requiredSourceMarkers.length,
+  checks: requiredSourceMarkers.length + requiredExamEngineMarkers.length,
   errors,
 };
 console.log(JSON.stringify(result, null, 2));

@@ -73,6 +73,8 @@ export type ExamResult = {
   unanswered: string[];
   elapsedSeconds: number;
   timedOut: boolean;
+  /** G5では提出前に解説を見ていないことを、結果の一部として保存する。 */
+  explanationViewedBeforeSubmit?: boolean;
   questionResults: Record<string, "correct" | "wrong" | "unanswered">;
   bySection: Record<string, { score: number; points: number; unanswered: number }>;
 };
@@ -443,7 +445,7 @@ export function scoreExam(form: ExamForm, answers: Record<string, number>, selec
   const started = Date.parse(startedAt);
   const submitted = Date.parse(submittedAt);
   const elapsedSeconds = Number.isFinite(started) && Number.isFinite(submitted) ? Math.max(0, Math.round((submitted - started) / 1000)) : 0;
-  return { formId: form.id, paper: form.paper, score, totalPoints: form.totalPoints, percentage: Math.round((score / form.totalPoints) * 100), selectedOptionalSectionIds: eligibleSectionIds(form, selectedOptionalSectionIds).filter((id) => form.optionalSectionIds.includes(id)), startedAt, submittedAt, unanswered, elapsedSeconds, timedOut, questionResults, bySection };
+  return { formId: form.id, paper: form.paper, score, totalPoints: form.totalPoints, percentage: Math.round((score / form.totalPoints) * 100), selectedOptionalSectionIds: eligibleSectionIds(form, selectedOptionalSectionIds).filter((id) => form.optionalSectionIds.includes(id)), startedAt, submittedAt, unanswered, elapsedSeconds, timedOut, explanationViewedBeforeSubmit: false, questionResults, bySection };
 }
 
 export function createExamSession(form: ExamForm, now = new Date(), selectedOptionalSectionIds = form.optionalSectionIds.slice(0, 3)): ExamSession {
@@ -503,7 +505,7 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
   const now = Number.isFinite(nowMs) ? nowMs : Date.now();
   return value.filter((entry): entry is ExamResult => {
     if (!isRecord(entry) || typeof entry.formId !== "string" || (entry.paper !== "math1a" && entry.paper !== "math2bc" && entry.paper !== "math3")) return false;
-    const allowedKeys = new Set(["formId", "paper", "score", "totalPoints", "percentage", "selectedOptionalSectionIds", "startedAt", "submittedAt", "unanswered", "elapsedSeconds", "timedOut", "questionResults", "bySection"]);
+    const allowedKeys = new Set(["formId", "paper", "score", "totalPoints", "percentage", "selectedOptionalSectionIds", "startedAt", "submittedAt", "unanswered", "elapsedSeconds", "timedOut", "explanationViewedBeforeSubmit", "questionResults", "bySection"]);
     if (Object.keys(entry).some((key) => !allowedKeys.has(key))) return false;
     const startedAt = isValidIsoDate(entry.startedAt) ? Date.parse(entry.startedAt) : Number.NaN;
     const submittedAt = isValidIsoDate(entry.submittedAt) ? Date.parse(entry.submittedAt) : Number.NaN;
@@ -523,6 +525,7 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
     const score = typeof entry.score === "number" ? entry.score : Number.NaN;
     const percentage = typeof entry.percentage === "number" ? entry.percentage : Number.NaN;
     const elapsedSeconds = typeof entry.elapsedSeconds === "number" ? entry.elapsedSeconds : Number.NaN;
+    const explanationViewedBeforeSubmit = entry.explanationViewedBeforeSubmit;
     const expectedSectionIds = entry.paper === "math1a"
       ? ["IA-01", "IA-02", "IA-03", "IA-04"]
       : entry.paper === "math2bc"
@@ -590,7 +593,8 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
     if (Object.keys(normalizedQuestionResults).length !== expectedQuestionIds.length
       || expectedQuestionIds.some((id) => !Object.prototype.hasOwnProperty.call(normalizedQuestionResults, id))) return false;
     const derivedUnansweredIds = expectedQuestionIds.filter((id) => normalizedQuestionResults[id] === "unanswered");
-    if (!Number.isSafeInteger(score) || score < 0 || score > totalPoints || entry.totalPoints !== totalPoints
+    if ((explanationViewedBeforeSubmit !== undefined && typeof explanationViewedBeforeSubmit !== "boolean")
+      || !Number.isSafeInteger(score) || score < 0 || score > totalPoints || entry.totalPoints !== totalPoints
       || !Number.isSafeInteger(percentage) || percentage < 0 || percentage > 100 || percentage !== Math.round((score / totalPoints) * 100)
       || !Number.isSafeInteger(elapsedSeconds) || elapsedSeconds < 0 || elapsedSeconds > EXAM_CONFIG[entry.paper].durationSeconds
       || typeof entry.timedOut !== "boolean" || elapsedSeconds !== Math.max(0, Math.round((submittedAt - startedAt) / 1000))
@@ -657,6 +661,7 @@ export function summarizeG5Evidence(history: ExamResult[]): G5EvidenceSummary {
     if (first.score < 60) reasons.push("60点未満です。");
     if (first.timedOut) reasons.push("時間切れです。");
     if (first.elapsedSeconds > limit) reasons.push("制限時間を超えています。");
+    if (first.explanationViewedBeforeSubmit !== false) reasons.push("提出前の解説非閲覧記録がありません。");
     return { formId, result: first, status: reasons.length === 0 ? "passed" : "failed", reasons };
   });
   const passedCount = rows.filter((row) => row.status === "passed").length;
