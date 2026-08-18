@@ -73,8 +73,8 @@ export type ExamResult = {
   unanswered: string[];
   elapsedSeconds: number;
   timedOut: boolean;
-  /** The learner cannot open explanations until the form is submitted. */
-  explanationViewedBeforeSubmit: false;
+  /** G5では提出前に解説を見ていないことを、結果の一部として保存する。 */
+  explanationViewedBeforeSubmit?: boolean;
   /** Set by the UI when this is the learner's first submission of the form. */
   firstSubmission?: boolean;
   questionResults: Record<string, "correct" | "wrong" | "unanswered">;
@@ -525,9 +525,9 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
     if (!Number.isFinite(startedAt) || !Number.isFinite(submittedAt) || startedAt > now || submittedAt > now || submittedAt < startedAt) return false;
     if (entry.explanationViewedBeforeSubmit !== undefined && entry.explanationViewedBeforeSubmit !== false) return false;
     if (entry.firstSubmission !== undefined && typeof entry.firstSubmission !== "boolean") return false;
-    // Older exports did not have this field. The current UI has no pre-submit
-    // explanation route, so a migrated result is explicitly marked false.
-    entry.explanationViewedBeforeSubmit = false;
+    // Older exports remain without this field. They are retained for normal
+    // progress migration, but G5 rejects them because the evidence is missing.
+    const explanationViewedBeforeSubmit = entry.explanationViewedBeforeSubmit;
     const totalPoints = EXAM_CONFIG[entry.paper].totalPoints;
     const score = typeof entry.score === "number" ? entry.score : Number.NaN;
     const percentage = typeof entry.percentage === "number" ? entry.percentage : Number.NaN;
@@ -599,7 +599,8 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
     if (Object.keys(normalizedQuestionResults).length !== expectedQuestionIds.length
       || expectedQuestionIds.some((id) => !Object.prototype.hasOwnProperty.call(normalizedQuestionResults, id))) return false;
     const derivedUnansweredIds = expectedQuestionIds.filter((id) => normalizedQuestionResults[id] === "unanswered");
-    if (!Number.isSafeInteger(score) || score < 0 || score > totalPoints || entry.totalPoints !== totalPoints
+    if ((explanationViewedBeforeSubmit !== undefined && typeof explanationViewedBeforeSubmit !== "boolean")
+      || !Number.isSafeInteger(score) || score < 0 || score > totalPoints || entry.totalPoints !== totalPoints
       || !Number.isSafeInteger(percentage) || percentage < 0 || percentage > 100 || percentage !== Math.round((score / totalPoints) * 100)
       || !Number.isSafeInteger(elapsedSeconds) || elapsedSeconds < 0 || elapsedSeconds > EXAM_CONFIG[entry.paper].durationSeconds
       || typeof entry.timedOut !== "boolean" || elapsedSeconds !== Math.max(0, Math.round((submittedAt - startedAt) / 1000))
@@ -644,7 +645,9 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
       && sectionScore === score
       && sectionUnanswered === entry.unanswered.length;
   });
-  const firstG5 = G5_FORM_IDS.map((formId) => normalized.find((entry) => entry.formId === formId));
+  const firstG5 = G5_FORM_IDS.map((formId) => normalized
+    .filter((entry) => entry.formId === formId)
+    .sort((left, right) => left.submittedAt.localeCompare(right.submittedAt))[0]);
   const retained = [...firstG5, ...normalized.slice(-30)].filter((entry): entry is ExamResult => Boolean(entry));
   return retained.filter((entry, index, all) => index === all.findIndex((candidate) => candidate.formId === entry.formId && candidate.submittedAt === entry.submittedAt));
 }
@@ -674,6 +677,8 @@ export function summarizeG5Evidence(history: ExamResult[]): G5EvidenceSummary {
     if (first.score < 60) reasons.push("60点未満です。");
     if (first.timedOut) reasons.push("時間切れです。");
     if (first.elapsedSeconds > limit) reasons.push("制限時間を超えています。");
+    if (first.explanationViewedBeforeSubmit === undefined) reasons.push("提出前の解説非閲覧記録がありません。");
+    else if (first.explanationViewedBeforeSubmit) reasons.push("提出前に解説を見た記録があります。");
     return { formId, result: first, status: reasons.length === 0 ? "passed" : "failed", reasons };
   });
   const passedCount = rows.filter((row) => row.status === "passed").length;

@@ -105,6 +105,7 @@ test("exam normalizers reject unknown forms, zero-length sessions, and fake unan
   const submittedAt = new Date(Date.now() - 30_000).toISOString();
   const result = scoreExam(form, {}, [], startedAt, submittedAt, false);
   assert.equal(normalizeExamHistory([result]).length, 1);
+  assert.equal(normalizeExamHistory([{ ...result, explanationViewedBeforeSubmit: "yes" }]).length, 0);
   const legacyResult = { ...result };
   delete legacyResult.questionResults;
   const migratedLegacy = normalizeExamHistory([legacyResult]);
@@ -189,4 +190,11 @@ test("G5 evidence uses the first submission for each IA and IIBC form", () => {
   assert.equal(firstRow.status, "failed");
   assert.match(firstRow.reasons.join(" "), /60点未満/);
   assert.equal(retried.allConditionsMet, false);
+
+  const missingReviewEvidence = summarizeG5Evidence(valid.map((result) => ({ ...result, explanationViewedBeforeSubmit: undefined })));
+  assert.equal(missingReviewEvidence.allConditionsMet, false);
+  assert.match(missingReviewEvidence.rows[0].reasons.join(" "), /解説非閲覧記録/);
+  const viewedBeforeSubmit = summarizeG5Evidence(valid.map((result) => ({ ...result, explanationViewedBeforeSubmit: true })));
+  assert.equal(viewedBeforeSubmit.allConditionsMet, false);
+  assert.match(viewedBeforeSubmit.rows[0].reasons.join(" "), /提出前に解説を見た記録/);
 });

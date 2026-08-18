@@ -32,9 +32,17 @@ if (!examEngine.includes("explanationViewedBeforeSubmit: false")) errors.push("p
 if (!examEngine.includes("result.firstSubmission === true")) errors.push("G5 first-submission annotation is checked: missing implementation marker");
 if (!examEngine.includes("const firstG5 = G5_FORM_IDS.map")) errors.push("G5 first records survive history retention: missing implementation marker");
 
+const requiredExamEngineMarkers = [
+  ["score stores pre-submit review evidence", "explanationViewedBeforeSubmit: false"],
+  ["G5 rejects missing review evidence", "提出前の解説非閲覧記録がありません。"],
+];
+for (const [label, marker] of requiredExamEngineMarkers) {
+  if (!examEngine.includes(marker)) errors.push(`${label}: missing implementation marker`);
+}
+
 const result = {
   ok: errors.length === 0,
-  checks: requiredSourceMarkers.length + 1,
+  checks: requiredSourceMarkers.length + requiredExamEngineMarkers.length + 3,
   errors,
 };
 console.log(JSON.stringify(result, null, 2));
