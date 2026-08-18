@@ -13,6 +13,7 @@ const genericPatterns = ["最初に行うべきことは？", "保つべき目�
 
 for (const concept of concepts) {
   const row = [];
+  let quickPrompt;
   for (const [level, kind] of [[0, "quick"], [1, "standard"], [2, "transfer"]]) {
     const problem = problemForConcept(concept.id, level, stages);
     if (!problem) {
@@ -22,6 +23,8 @@ for (const concept of concepts) {
     selected.push(problem.id);
     row.push(problem.id);
     if (problem.kind !== kind) errors.push(`${concept.id}/${kind}: selected ${problem.id} is ${problem.kind}`);
+    if (kind === "quick") quickPrompt = problem.prompt;
+    if (kind === "transfer" && quickPrompt && problem.prompt.replace(/^転移練習：/u, "") === quickPrompt) errors.push(`${concept.id}/transfer: transfer prompt repeats quick prompt`);
     if (!problem.conceptIds.includes(concept.id)) errors.push(`${concept.id}/${kind}: selected problem is not tagged to concept`);
     if (problem.options.length !== 4 || new Set(problem.options).size !== 4) errors.push(`${concept.id}/${kind}: expected four unique options`);
     if (!Number.isSafeInteger(problem.answer) || problem.answer < 0 || problem.answer >= problem.options.length) errors.push(`${concept.id}/${kind}: invalid answer index`);
@@ -33,7 +36,7 @@ for (const concept of concepts) {
   const delayed = delayedProblemForConcept(concept.id, stages);
   if (!delayed || delayed.id !== `AUTO-${concept.id}-delayed`) errors.push(`${concept.id}/delayed: no dedicated delayed retest`);
   const transfer = row[2] ? problemBank.find((problem) => problem.id === row[2]) : undefined;
-  if (delayed && (delayed.kind !== "transfer" || row.includes(delayed.id) || (transfer && delayed.prompt === transfer.prompt && delayed.options.join("\u001f") === transfer.options.join("\u001f") && delayed.answer === transfer.answer))) errors.push(`${concept.id}/delayed: delayed retest is not distinct from the staged transfer`);
+  if (delayed && (delayed.kind !== "transfer" || row.includes(delayed.id) || delayed.prompt.includes("次の問題を解き直せ") || (transfer && delayed.prompt === transfer.prompt && delayed.options.join("\u001f") === transfer.options.join("\u001f") && delayed.answer === transfer.answer))) errors.push(`${concept.id}/delayed: delayed retest is not distinct from the staged transfer`);
 }
 
 const promptOwners = new Map();

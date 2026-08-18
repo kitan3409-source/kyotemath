@@ -71,6 +71,7 @@ test("scores by points, preserves omissions, and records elapsed timing", () => 
   assert.equal(result.startedAt, startedAt);
   assert.equal(result.submittedAt, submittedAt);
   assert.equal(result.explanationViewedBeforeSubmit, false);
+  assert.equal(normalizeExamHistory([{ ...result, explanationViewedBeforeSubmit: true }]).length, 0);
 });
 
 test("session normalization and timeout keep the exam resumable", () => {

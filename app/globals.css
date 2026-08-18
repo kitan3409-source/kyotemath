@@ -197,6 +197,11 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .lesson-next { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 22px 25px; border-color: rgb(201 245 106 / 28%); background: linear-gradient(105deg, rgb(201 245 106 / 7%), transparent 70%), var(--surface); }
 .lesson-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .lesson-detail { padding: 24px 25px; }
+.lesson-more { overflow: hidden; }
+.lesson-more summary { padding: 17px 22px; cursor: pointer; color: var(--cyan); font-size: 11px; font-weight: 700; list-style-position: inside; }
+.lesson-more[open] summary { border-bottom: 1px solid var(--line-soft); }
+.lesson-more .lesson-detail-grid { padding: 0 12px 12px; }
+.lesson-more .lesson-detail { padding: 14px 13px; }
 .lesson-detail h3 { margin: 7px 0 11px; font-size: 17px; }
 .lesson-prose { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.9; white-space: pre-line; }
 .lesson-why { margin-top: 18px; padding: 13px 14px; border-left: 2px solid var(--cyan); border-radius: 0 9px 9px 0; background: rgb(139 226 223 / 5%); }
@@ -297,9 +302,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 }
 
 .exam-paper-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
-.exam-paper-grid .button { min-height: 36px; padding-inline: 12px; font-size: 10px; }
+.exam-paper-grid .button { min-height: 44px; padding-inline: 12px; font-size: 10px; }
 .exam-form-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.exam-form-grid .button { min-height: 36px; padding-inline: 12px; font-size: 10px; }
+.exam-form-grid .button { min-height: 44px; padding-inline: 12px; font-size: 10px; }
 .exam-section-picker { padding: 22px 25px; }
 .exam-section-picker h3 { margin: 6px 0 5px; font-size: 17px; }
 .exam-section-picker p:not(.eyebrow) { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }

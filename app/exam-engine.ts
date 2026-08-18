@@ -75,6 +75,8 @@ export type ExamResult = {
   timedOut: boolean;
   /** G5では提出前に解説を見ていないことを、結果の一部として保存する。 */
   explanationViewedBeforeSubmit?: boolean;
+  /** Set by the UI when this is the learner's first submission of the form. */
+  firstSubmission?: boolean;
   questionResults: Record<string, "correct" | "wrong" | "unanswered">;
   bySection: Record<string, { score: number; points: number; unanswered: number }>;
 };
@@ -503,9 +505,9 @@ export function normalizeExamSession(value: unknown, nowMs = Date.now()): ExamSe
 export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamResult[] {
   if (!Array.isArray(value)) return [];
   const now = Number.isFinite(nowMs) ? nowMs : Date.now();
-  return value.filter((entry): entry is ExamResult => {
+  const normalized = value.filter((entry): entry is ExamResult => {
     if (!isRecord(entry) || typeof entry.formId !== "string" || (entry.paper !== "math1a" && entry.paper !== "math2bc" && entry.paper !== "math3")) return false;
-    const allowedKeys = new Set(["formId", "paper", "score", "totalPoints", "percentage", "selectedOptionalSectionIds", "startedAt", "submittedAt", "unanswered", "elapsedSeconds", "timedOut", "explanationViewedBeforeSubmit", "questionResults", "bySection"]);
+    const allowedKeys = new Set(["formId", "paper", "score", "totalPoints", "percentage", "selectedOptionalSectionIds", "startedAt", "submittedAt", "unanswered", "elapsedSeconds", "timedOut", "explanationViewedBeforeSubmit", "firstSubmission", "questionResults", "bySection"]);
     if (Object.keys(entry).some((key) => !allowedKeys.has(key))) return false;
     const startedAt = isValidIsoDate(entry.startedAt) ? Date.parse(entry.startedAt) : Number.NaN;
     const submittedAt = isValidIsoDate(entry.submittedAt) ? Date.parse(entry.submittedAt) : Number.NaN;
@@ -521,11 +523,15 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
         : selectedIds.length === 0);
     if (!formIdPattern.test(entry.formId) || !validSelection) return false;
     if (!Number.isFinite(startedAt) || !Number.isFinite(submittedAt) || startedAt > now || submittedAt > now || submittedAt < startedAt) return false;
+    if (entry.explanationViewedBeforeSubmit !== undefined && entry.explanationViewedBeforeSubmit !== false) return false;
+    if (entry.firstSubmission !== undefined && typeof entry.firstSubmission !== "boolean") return false;
+    // Older exports remain without this field. They are retained for normal
+    // progress migration, but G5 rejects them because the evidence is missing.
+    const explanationViewedBeforeSubmit = entry.explanationViewedBeforeSubmit;
     const totalPoints = EXAM_CONFIG[entry.paper].totalPoints;
     const score = typeof entry.score === "number" ? entry.score : Number.NaN;
     const percentage = typeof entry.percentage === "number" ? entry.percentage : Number.NaN;
     const elapsedSeconds = typeof entry.elapsedSeconds === "number" ? entry.elapsedSeconds : Number.NaN;
-    const explanationViewedBeforeSubmit = entry.explanationViewedBeforeSubmit;
     const expectedSectionIds = entry.paper === "math1a"
       ? ["IA-01", "IA-02", "IA-03", "IA-04"]
       : entry.paper === "math2bc"
@@ -638,7 +644,12 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
       && sectionPoints === totalPoints
       && sectionScore === score
       && sectionUnanswered === entry.unanswered.length;
-  }).slice(-30);
+  });
+  const firstG5 = G5_FORM_IDS.map((formId) => normalized
+    .filter((entry) => entry.formId === formId)
+    .sort((left, right) => left.submittedAt.localeCompare(right.submittedAt))[0]);
+  const retained = [...firstG5, ...normalized.slice(-30)].filter((entry): entry is ExamResult => Boolean(entry));
+  return retained.filter((entry, index, all) => index === all.findIndex((candidate) => candidate.formId === entry.formId && candidate.submittedAt === entry.submittedAt));
 }
 
 /**
@@ -648,12 +659,17 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
  */
 export function summarizeG5Evidence(history: ExamResult[]): G5EvidenceSummary {
   const rows = G5_FORM_IDS.map((formId): G5EvidenceRow => {
-    const first = history
+    const formResults = history
       .filter((result) => result.formId === formId)
       .slice()
-      .sort((left, right) => left.submittedAt.localeCompare(right.submittedAt))[0];
+      .sort((left, right) => left.submittedAt.localeCompare(right.submittedAt));
+    const first = formResults[0];
     if (!first) return { formId, status: "missing", reasons: ["初回提出の記録がありません。"] };
     const reasons: string[] = [];
+    const flaggedFirst = formResults.filter((result) => result.firstSubmission === true);
+    if (flaggedFirst.length > 0 && (flaggedFirst.length !== 1 || flaggedFirst[0].submittedAt !== first.submittedAt)) {
+      reasons.push("初回提出フラグと提出時刻が一致しません。");
+    }
     const limit = first.paper === "math1a" || first.paper === "math2bc"
       ? EXAM_CONFIG.math1a.durationSeconds
       : EXAM_CONFIG.math3.durationSeconds;

@@ -71,11 +71,11 @@ test("practice snapshots keep valid resume data and reject invalid phases", () =
     active: true,
     conceptId: "I-01",
     problemId: "Q-I01-01",
-    phase: "lesson",
+    phase: "question",
     lessonStep: "overview",
-    answer: null,
-    feedback: null,
-    errorCause: null,
+    answer: 2,
+    feedback: { correct: false, explanation: "復習する" },
+    errorCause: "procedure",
     reviewCause: null,
   });
 });

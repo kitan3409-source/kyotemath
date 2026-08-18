@@ -156,8 +156,11 @@ function sanitizePracticeResume(
   const problem = problemById.get(practice.problemId);
   if (!problem) return undefined;
   const concept = conceptById.get(practice.conceptId);
-  const foundationSkip = allowFoundationSkip && practice.conceptId === "I-01";
-  if (!concept || (!foundationSkip && !concept.requires.every((id) => isMasteryComplete(sourceMastery[id])))) return undefined;
+  const prerequisitesReady = concept?.requires.every((id) => {
+    const prerequisite = conceptById.get(id);
+    return (allowFoundationSkip && prerequisite?.course === "bridge") || isMasteryComplete(sourceMastery[id]);
+  });
+  if (!concept || !prerequisitesReady) return undefined;
   const level = sourceMastery[practice.conceptId] ?? 0;
   const dueAt = level === 3 ? effectiveDueAtForAttempt(sourceAttempts[practice.conceptId]) : undefined;
   const delayedAllowed = level === 3 && Boolean(dueAt && Date.parse(dueAt) <= Date.now());
@@ -182,6 +185,19 @@ function sanitizePracticeResume(
 
 function isCommonTestConcept(concept: Concept) {
   return ["I", "A", "II", "B", "C"].includes(concept.course) && concept.priority === "core";
+}
+
+function prerequisiteClosure(seed: Concept[]) {
+  const included = new Set<string>();
+  const visit = (conceptId: string) => {
+    if (included.has(conceptId)) return;
+    const concept = conceptById.get(conceptId);
+    if (!concept) return;
+    included.add(concept.id);
+    concept.requires.forEach(visit);
+  };
+  seed.forEach((concept) => visit(concept.id));
+  return concepts.filter((concept) => included.has(concept.id));
 }
 const storageKeys = {
   mastery: "kyote-math-60:mastery",
@@ -301,8 +317,15 @@ function normalizeImportedProgress(value: unknown): PersistedProgress | null {
       && isErrorCause(rawRetry.cause)
       ? { cause: rawRetry.cause, problemId: rawRetry.problemId, scheduledAt: rawRetry.scheduledAt }
       : undefined;
+    const matchesEvidenceProblem = (entry: Record<string, unknown>) => {
+      const problemId = typeof entry.problemId === "string" ? entry.problemId : undefined;
+      const problem = problemId ? problemById.get(problemId) : undefined;
+      if (!problem || !problem.conceptIds.includes(id)) return false;
+      if (entry.delayed === true) return problem.id === `AUTO-${id}-delayed` && entry.kind === "transfer";
+      return entry.delayed === false && !problem.id.endsWith("-delayed") && problem.kind === entry.kind;
+    };
     const evidence = Array.isArray(rawAttempt.evidence)
-      ? rawAttempt.evidence.filter((entry): entry is AttemptEvidence => isRecord(entry) && typeof entry.problemId === "string" && problemBank.some((problem) => problem.id === entry.problemId) && (entry.kind === "quick" || entry.kind === "standard" || entry.kind === "transfer") && typeof entry.delayed === "boolean" && typeof entry.correct === "boolean" && notFuture(entry.answeredAt)).map((entry) => ({ ...entry, source: "imported" as const })).slice(-60)
+      ? rawAttempt.evidence.filter((entry): entry is AttemptEvidence => isRecord(entry) && typeof entry.problemId === "string" && matchesEvidenceProblem(entry) && (entry.kind === "quick" || entry.kind === "standard" || entry.kind === "transfer") && typeof entry.delayed === "boolean" && typeof entry.correct === "boolean" && notFuture(entry.answeredAt)).map((entry) => ({ ...entry, source: "imported" as const })).slice(-60)
       : undefined;
     nextAttempts[id] = { correct: Math.min(correct, total), total, lastAt, dueAt, streak, lastErrorCause, retry, evidence };
   }
@@ -332,6 +355,7 @@ function normalizeImportedProgress(value: unknown): PersistedProgress | null {
       return session && examFormById.has(session.formId) ? session : undefined;
     })(),
     examHistory: normalizeExamHistory(value.examHistory).filter((result) => examFormById.has(result.formId)),
+    foundationSkipped: value.foundationSkipped === true,
   };
 }
 
@@ -430,7 +454,13 @@ export default function Home() {
       void loadProgress().then((progress) => {
         const storedTheme = readStored(storageKeys.theme);
         const legacyFocus = safeParse<{ totalSeconds?: number; startedAt?: number } | null>(readStored(storageKeys.focus), null);
-        const firstRun = !readStored(storageKeys.initialized);
+        const hasPersistedProgress = Object.keys(progress.attempts).length > 0
+          || progress.studyDates.length > 0
+          || (progress.examHistory?.length ?? 0) > 0
+          || Boolean(progress.examSession?.active)
+          || Boolean(progress.practice?.active)
+          || progress.foundationSkipped === true;
+        const firstRun = !readStored(storageKeys.initialized) && !hasPersistedProgress;
         const initialMastery = masteryFromAttempts(progress.attempts);
         if (firstRun) setSetupOpen(true);
         setMastery(initialMastery);
@@ -440,7 +470,7 @@ export default function Home() {
         setAwaySeconds(progress.awaySeconds);
         setGuideSeen(progress.guideSeen);
         setErrorHistory(normalizeErrorHistoryForContent(progress.errorHistory));
-        const storedFoundationSkipped = readStored(storageKeys.foundationSkipped) === "true";
+        const storedFoundationSkipped = progress.foundationSkipped === true || readStored(storageKeys.foundationSkipped) === "true";
         setFoundationSkipped(storedFoundationSkipped);
         const restoredExam = normalizeExamSession(progress.examSession, Date.now());
         const usableExam = restoredExam && examFormById.has(restoredExam.formId) ? restoredExam : null;
@@ -532,6 +562,8 @@ export default function Home() {
         setAwaySeconds(progress.awaySeconds);
         setGuideSeen(progress.guideSeen);
         setErrorHistory(normalizeErrorHistoryForContent(progress.errorHistory));
+        const syncedFoundationSkipped = progress.foundationSkipped === true || readStored(storageKeys.foundationSkipped) === "true";
+        setFoundationSkipped(syncedFoundationSkipped);
         const restoredExam = normalizeExamSession(progress.examSession, Date.now());
         const usableExam = restoredExam && examFormById.has(restoredExam.formId) ? restoredExam : null;
         setExamSession(usableExam);
@@ -541,7 +573,7 @@ export default function Home() {
           setSelectedOptionalSectionIds(usableExam.selectedOptionalSectionIds);
           setActiveTab("mock");
         }
-        const restoredPractice = sanitizePracticeResume(normalizePracticeForContent(progress.practice), progress.attempts, syncedMastery, readStored(storageKeys.foundationSkipped) === "true");
+        const restoredPractice = sanitizePracticeResume(normalizePracticeForContent(progress.practice), progress.attempts, syncedMastery, syncedFoundationSkipped);
         if (restoredPractice?.active) {
           setPracticeResumeActive(true);
           setSelectedConceptId(restoredPractice.conceptId);
@@ -573,7 +605,7 @@ export default function Home() {
     const practice = practiceResumeActive
       ? { active: true, conceptId: selectedConceptId, problemId: practiceProblemId, phase: practicePhase, lessonStep, answer: practiceAnswer, feedback: practiceFeedback, errorCause: practiceErrorCause, reviewCause: practiceReviewCause }
       : undefined;
-    void saveProgress({ mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice, errorHistory, examSession: examSession ?? undefined, examHistory });
+    void saveProgress({ mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice, errorHistory, examSession: examSession ?? undefined, examHistory, foundationSkipped });
   }, [attempts, awaySeconds, errorHistory, examHistory, examSession, foundationSkipped, guideSeen, hydrated, lessonStep, mastery, practiceAnswer, practiceErrorCause, practiceFeedback, practicePhase, practiceProblemId, practiceResumeActive, practiceReviewCause, selectedConceptId, studyDates, studySeconds]);
 
   useEffect(() => {
@@ -647,7 +679,7 @@ export default function Home() {
       const form = examFormById.get(examSession.formId);
       if (!form || !isExamExpired(examSession, new Date())) return;
       const submittedAt = examSession.deadlineAt;
-      const result = scoreExam(form, examSession.answers, examSession.selectedOptionalSectionIds, examSession.startedAt, submittedAt, true);
+      const result = { ...scoreExam(form, examSession.answers, examSession.selectedOptionalSectionIds, examSession.startedAt, submittedAt, true), firstSubmission: !examHistory.some((entry) => entry.formId === examSession.formId) };
       setExamHistory((previous) => previous.some((entry) => entry.formId === result.formId && entry.startedAt === result.startedAt)
         ? previous
         : [...previous, result].slice(-30));
@@ -656,7 +688,7 @@ export default function Home() {
         : previous);
     }, delay);
     return () => window.clearTimeout(timeout);
-  }, [examNow, examSession, hydrated]);
+  }, [examHistory, examNow, examSession, hydrated]);
 
   useEffect(() => {
     if (!focusOpen && !setupOpen && !sessionSummary) return;
@@ -712,17 +744,26 @@ export default function Home() {
 
   const hasPractice = (conceptId: string) => problemByConcept.has(conceptId);
   const commonTestConcepts = concepts.filter(isCommonTestConcept);
+  const commonTestRouteConcepts = prerequisiteClosure(commonTestConcepts);
+  const routeConcepts = concepts.filter((concept) => concept.course === "bridge" || commonTestRouteConcepts.includes(concept));
+  const studyRouteConcepts = foundationSkipped
+    ? commonTestRouteConcepts.filter((concept) => concept.course !== "bridge")
+    : routeConcepts;
   const isRouteTouched = (concept: Concept) => (mastery[concept.id] ?? 0) > 0 || Boolean(guideSeen[concept.id]) || Boolean(attempts[concept.id]);
   const isRouteComplete = (concept: Concept) => isMasteryComplete(mastery[concept.id]);
   const isPrerequisiteReady = (id: string) => isMasteryComplete(mastery[id]);
-  const isUnlocked = (concept: Concept) => concept.requires.every(isPrerequisiteReady);
+  const isUnlocked = (concept: Concept) => concept.requires.every((id) => {
+    const prerequisite = conceptById.get(id);
+    const bridgeBypass = foundationSkipped && prerequisite?.course === "bridge";
+    return bridgeBypass || isPrerequisiteReady(id);
+  });
   const dueAtForConcept = (conceptId: string) => {
     const attempt = attempts[conceptId];
     return (mastery[conceptId] ?? 0) === 3 ? effectiveDueAtForAttempt(attempt) : attempt?.dueAt;
   };
   const nextConcept = (() => {
     const now = currentTime();
-    const candidates = commonTestConcepts
+    const candidates = studyRouteConcepts
       .filter((concept) => {
         const dueAt = dueAtForConcept(concept.id);
         const due = Boolean(dueAt && Date.parse(dueAt) <= now);
@@ -737,7 +778,7 @@ export default function Home() {
         const untouched = (concept: Concept) => isRouteComplete(concept) ? 1 : 0;
         return untouched(a) - untouched(b) || due(a) - due(b) || (conceptOrder.get(a.id) ?? 9999) - (conceptOrder.get(b.id) ?? 9999);
       });
-    return candidates[0] ?? commonTestConcepts.find((concept) => hasPractice(concept.id) || Boolean(conceptGuides[concept.id])) ?? concepts[0];
+    return candidates[0] ?? studyRouteConcepts.find((concept) => hasPractice(concept.id) || Boolean(conceptGuides[concept.id])) ?? concepts[0];
   })();
   const selectedConcept = conceptById.get(selectedConceptId) ?? nextConcept;
   const selectedGuide: ConceptGuide | undefined = conceptGuides[selectedConcept.id];
@@ -882,12 +923,14 @@ export default function Home() {
       };
     });
     setErrorHistory((previous) => appendErrorRecord(previous, conceptId, { problemId: currentPractice.id, cause, at: new Date().toISOString() }));
+    retryFromError(cause);
   }
 
-  function retryFromError() {
-    if (!practiceErrorCause) return;
+  function retryFromError(causeOverride?: ErrorCause) {
+    const cause = causeOverride ?? practiceErrorCause;
+    if (!cause) return;
     const conceptId = practiceConceptIdFor(currentPractice);
-    const repairKind: Problem["kind"] = practiceErrorCause === "concept_gap" ? "quick" : practiceErrorCause === "procedure" ? "standard" : practiceErrorCause === "misread" ? "transfer" : currentPractice.kind;
+    const repairKind: Problem["kind"] = cause === "concept_gap" ? "quick" : cause === "procedure" ? "standard" : cause === "misread" ? "transfer" : currentPractice.kind;
     const staged = stagedProblemsByConcept.get(conceptId) ?? {};
     const candidates = [...(staged[repairKind] ?? []), ...(staged.quick ?? []), ...(staged.standard ?? []), ...(staged.transfer ?? [])]
       .filter((problem) => problem.id !== currentPractice.id && !problem.id.endsWith("-delayed"))
@@ -900,14 +943,14 @@ export default function Home() {
     setLessonStep("overview");
     setPracticeAnswer(null);
     setPracticeFeedback(null);
-    setPracticeReviewCause(practiceErrorCause);
+    setPracticeReviewCause(cause);
     setPracticeErrorCause(null);
   }
 
   function nextPractice() {
     const now = currentTime();
     const currentConcept = conceptById.get(selectedConceptId);
-    const candidates = concepts.filter((concept) => isCommonTestConcept(concept) && isUnlocked(concept) && hasPractice(concept.id));
+    const candidates = studyRouteConcepts.filter((concept) => isUnlocked(concept) && hasPractice(concept.id));
     const dueConcept = candidates.filter((concept) => {
       const dueAt = dueAtForConcept(concept.id);
       return Boolean(dueAt && Date.parse(dueAt) <= now);
@@ -1144,7 +1187,7 @@ export default function Home() {
     const expired = isExamExpired(session, new Date());
     const isTimedOut = timedOut || expired;
     const submittedAt = isTimedOut ? (submittedAtOverride ?? session.deadlineAt) : new Date().toISOString();
-    const result = scoreExam(form, session.answers, session.selectedOptionalSectionIds, session.startedAt, submittedAt, isTimedOut);
+    const result = { ...scoreExam(form, session.answers, session.selectedOptionalSectionIds, session.startedAt, submittedAt, isTimedOut), firstSubmission: !examHistory.some((entry) => entry.formId === session.formId) };
     setExamHistory((previous) => previous.some((entry) => entry.formId === result.formId && entry.startedAt === result.startedAt)
       ? previous
       : [...previous, result].slice(-30));
@@ -1160,7 +1203,7 @@ export default function Home() {
     setFoundationSkipped(true);
     writeStored(storageKeys.foundationSkipped, "true");
     setMastery(mergedMastery);
-    void saveProgress({ mastery: mergedMastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice: initialPractice, errorHistory });
+    void saveProgress({ mastery: mergedMastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice: initialPractice, errorHistory, foundationSkipped: true });
     setSelectedConceptId("I-01");
     setPracticeProblemId("Q-I01-01");
     setPracticePhase("lesson");
@@ -1193,7 +1236,7 @@ export default function Home() {
   }
 
   function exportData() {
-    const payload = { exportedAt: new Date().toISOString(), mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice: currentPracticeResume(), errorHistory, examSession, examHistory, curriculum: "high_school_math_concepts.v1" };
+    const payload = { exportedAt: new Date().toISOString(), mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice: currentPracticeResume(), errorHistory, examSession, examHistory, foundationSkipped, curriculum: "high_school_math_concepts.v1" };
     const fileName = "kyote-math-60-progress.json";
     const content = JSON.stringify(payload, null, 2);
     const file = new File([content], fileName, { type: "application/json" });
@@ -1242,10 +1285,13 @@ export default function Home() {
       if (usableExam) {
         setExamFormId(usableExam.formId);
         setSelectedOptionalSectionIds(usableExam.selectedOptionalSectionIds);
+        setActiveTab("mock");
       }
-      const importedPractice = sanitizePracticeResume(normalizePracticeForContent(imported.practice), imported.attempts, imported.mastery);
-      setFoundationSkipped(false);
-      removeStored(storageKeys.foundationSkipped);
+      const importedFoundationSkipped = imported.foundationSkipped === true;
+      const importedPractice = sanitizePracticeResume(normalizePracticeForContent(imported.practice), imported.attempts, imported.mastery, importedFoundationSkipped);
+      setFoundationSkipped(importedFoundationSkipped);
+      if (importedFoundationSkipped) writeStored(storageKeys.foundationSkipped, "true");
+      else removeStored(storageKeys.foundationSkipped);
       if (importedPractice?.active) {
         setPracticeResumeActive(true);
         setSelectedConceptId(importedPractice.conceptId);
@@ -1256,7 +1302,6 @@ export default function Home() {
         setPracticeFeedback(importedPractice.feedback);
         setPracticeErrorCause(importedPractice.errorCause);
         setPracticeReviewCause(importedPractice.reviewCause);
-        setActiveTab("practice");
       } else {
         setPracticeResumeActive(false);
         setPracticePhase("lesson");
@@ -1267,6 +1312,7 @@ export default function Home() {
         setPracticeErrorCause(null);
         setPracticeReviewCause(null);
       }
+      if (!usableExam && importedPractice?.active) setActiveTab("practice");
       await saveProgress(imported);
       writeStored(storageKeys.initialized, "true");
       setSetupOpen(false);
@@ -1423,8 +1469,7 @@ export default function Home() {
                 <div className="error-cause-list">
                   {ERROR_CAUSE_OPTIONS.map((option) => <button className={["cause-button", practiceErrorCause === option.id ? "selected" : ""].filter(Boolean).join(" ")} type="button" key={option.id} onClick={() => selectErrorCause(option.id)}><span>{option.label}</span><small>{option.description}</small></button>)}
                 </div>
-                {practiceErrorCause && <p className="cause-selected">「{ERROR_CAUSE_OPTIONS.find((option) => option.id === practiceErrorCause)?.label}」として、短い復習を予約した。</p>}
-                <div className="feedback-actions"><button className="button button-primary" type="button" disabled={!practiceErrorCause} onClick={retryFromError}>原因別にやり直す <span>→</span></button><button className="text-button" type="button" onClick={() => setPracticeAnswer(currentPractice.answer)}>正答を表示</button></div>
+                <div className="feedback-actions"><span className="selected-note">原因を選ぶと、すぐに別表現の1問へ進みます。</span><button className="text-button" type="button" onClick={() => setPracticeAnswer(currentPractice.answer)}>正答を表示</button></div>
               </div>}
             </div>}
           </section>
@@ -1474,10 +1519,13 @@ export default function Home() {
           ) : (
             <section className="lesson-block panel-card"><p className="eyebrow accent">CONCEPT TARGET</p><h3>この概念でできるようになること</h3><p>{selectedConcept.target}</p></section>
           )}
-          {lesson && <section className="lesson-detail-grid">
-            <article className="lesson-detail panel-card"><p className="eyebrow accent">LESSON GOAL</p><h3>今日できるようになること</h3><p className="lesson-prose">{lesson.goal}</p><div className="lesson-why"><strong>なぜ必要？</strong><p>{lesson.whyItMatters}</p></div></article>
-            <article className="lesson-detail panel-card"><p className="eyebrow accent">HOW TO THINK</p><h3>公式を使う前の考え方</h3><p className="lesson-prose">{lesson.explanation}</p></article>
-          </section>}
+          {lesson && <details className="lesson-more panel-card">
+            <summary>詳しい説明を読む（必要なら）</summary>
+            <div className="lesson-detail-grid">
+              <article className="lesson-detail"><p className="eyebrow accent">LESSON GOAL</p><h3>今日できるようになること</h3><p className="lesson-prose">{lesson.goal}</p><div className="lesson-why"><strong>なぜ必要？</strong><p>{lesson.whyItMatters}</p></div></article>
+              <article className="lesson-detail"><p className="eyebrow accent">HOW TO THINK</p><h3>公式を使う前の考え方</h3><p className="lesson-prose">{lesson.explanation}</p></article>
+            </div>
+          </details>}
           <section className="lesson-next panel-card"><div><p className="eyebrow accent">STEP 1 / 2</p><h3>意味がつながったら、例題へ</h3><p>ここまでの内容を保存しました。次に開いたときもこの位置から続けられます。</p></div><button className="button button-primary" type="button" onClick={() => setLessonStep("worked")}>例題を見る <span>→</span></button></section>
         </> : <>
           {lesson && <>
@@ -1508,7 +1556,7 @@ export default function Home() {
       const paperLabel = selectedForm.paper === "math1a" ? "数学I・数学A" : selectedForm.paper === "math2bc" ? "数学II・数学B・数学C" : "数学III";
       return <div className="page-stack">
         <div className="page-heading"><div><p className="eyebrow accent">{isMath3 ? "MATH III INTEGRATION" : "FULL EXAM MODE"}</p><h2>{isMath3 ? "数学IIIを横断して測る" : "本番と同じ時間で測る"}</h2><p>オリジナルの連続誘導フォーム。解説は提出後だけに表示し、練習の正答率とは別に記録します。</p></div><span className="mode-badge">{durationMinutes}分 / 100点</span></div>
-        <section className="mock-intro panel-card"><div className="mock-number">{durationMinutes}</div><div><p className="eyebrow">{isMath3 ? "INTEGRATED MATH III TRACK" : "OFFICIAL FORMAT TARGET"}</p><h3>{paperLabel}</h3><p>制限時間{durationMinutes}分、満点100点。未解答は0点として記録し、時間切れならその時点で自動提出します。</p><div className="exam-paper-grid" role="tablist" aria-label="模試科目">{examPaperOptions.map((option) => <button className={`button ${selectedForm.paper === option.paper ? "button-primary" : "button-ghost"}`} type="button" role="tab" aria-selected={selectedForm.paper === option.paper} key={option.paper} onClick={() => chooseExamPaper(option.paper)}>{option.label}</button>)}</div><div className="exam-form-grid">{examForms.filter((form) => form.paper === selectedForm.paper).map((form) => <button className={`button ${examFormId === form.id ? "button-primary" : "button-ghost"}`} type="button" key={form.id} onClick={() => chooseExamForm(form.id)}>{form.title}</button>)}</div></div></section>
+        <section className="mock-intro panel-card"><div className="mock-number">{durationMinutes}</div><div><p className="eyebrow">{isMath3 ? "INTEGRATED MATH III TRACK" : "OFFICIAL FORMAT TARGET"}</p><h3>{paperLabel}</h3><p>制限時間{durationMinutes}分、満点100点。未解答は0点として記録し、時間切れならその時点で自動提出します。</p><div className="exam-paper-grid" role="group" aria-label="模試科目">{examPaperOptions.map((option) => <button className={`button ${selectedForm.paper === option.paper ? "button-primary" : "button-ghost"}`} type="button" aria-pressed={selectedForm.paper === option.paper} key={option.paper} onClick={() => chooseExamPaper(option.paper)}>{option.label}</button>)}</div><div className="exam-form-grid">{examForms.filter((form) => form.paper === selectedForm.paper).map((form) => <button className={`button ${examFormId === form.id ? "button-primary" : "button-ghost"}`} type="button" aria-pressed={examFormId === form.id} key={form.id} onClick={() => chooseExamForm(form.id)}>{form.title}</button>)}</div></div></section>
         {isIibc && <section className="exam-section-picker panel-card"><p className="eyebrow accent">SELECT 3 OF 4</p><h3>選択分野を3つ固定する</h3><p>開始後は変更できません。選んだ3分野だけが100点に含まれます。</p><div className="exam-option-grid">{selectedForm.optionalSectionIds.map((sectionId) => { const section = selectedForm.sections.find((candidate) => candidate.id === sectionId); const selected = selectedOptionalSectionIds.includes(sectionId); return <button className={`exam-option ${selected ? "selected" : ""}`} type="button" aria-pressed={selected} key={sectionId} onClick={() => toggleOptionalSection(sectionId)}><strong>{section?.title ?? sectionId}</strong><span>{selected ? "選択中" : "未選択"}</span></button>; })}</div><small>現在 {selectedOptionalSectionIds.length} / 3 分野</small></section>}
         <section className="mock-rules panel-card"><span>01　{durationMinutes}分を厳守</span><span>02　途中保存・再開</span><span>03　提出後に採点</span></section>
         <section className="g5-gate panel-card"><div className="section-heading"><div><p className="eyebrow accent">G5 EVIDENCE GATE</p><h3>未見6フォームの初回提出</h3></div><strong>{g5Evidence.observedCount} / 6</strong></div><p>IA-F1〜F3、IIBC-F1〜F3を各1回ずつ記録します。再受験で初回結果を上書きせず、60点・70分以内・時間切れなし・提出前解説なしを機械判定します。最終的なG5判定は実ユーザーの記録を監査して確定します。</p><div className="g5-grid">{g5Evidence.rows.map((row) => { const result = row.result; const status = row.status === "passed" ? "条件達成" : row.status === "failed" ? "条件未達" : "未提出"; return <div className={`g5-row ${row.status}`} key={row.formId}><strong>{row.formId}</strong><span>{result ? `${result.score}/100 · ${formatTime(result.elapsedSeconds)} · 未解答${result.unanswered.length}` : "初回提出なし"}</span><em>{status}</em>{row.reasons.length > 0 && <small>{row.reasons.join(" ")}</small>}</div>; })}</div></section>
@@ -1571,7 +1619,7 @@ export default function Home() {
       {focusRunning && <button className="focus-running" type="button" aria-label={`集中タイマー ${formatTime(focusSeconds)}。詳細を開く`} onClick={() => setFocusOpen(true)}><span className="pulse-dot" />FOCUS <strong aria-live="polite" aria-atomic="true">{formatTime(focusSeconds)}</strong></button>}
       {focusOpen && <div className="modal-backdrop" role="presentation"><section ref={focusModalRef} className="focus-modal" role="dialog" aria-modal="true" aria-labelledby="focus-title" aria-describedby="focus-description"><button ref={modalCloseRef} className="modal-close" type="button" onClick={() => setFocusOpen(false)} aria-label="閉じる">×</button><p className="eyebrow accent">FOCUS MODE</p>{focusRunning ? <><h2 id="focus-title">計測中。画面は閉じてOK。</h2><p id="focus-description">選んだ時間で自動終了します。途中でSTOPもでき、画面を離れた時間は別に記録します。</p><div className="focus-live"><strong aria-live="polite" aria-atomic="true">{formatTime(focusSeconds)}</strong><span>経過時間</span><small>{studySession ? `スマホを置いた時間 ${formatTime(sessionAwaySeconds(studySession, currentTime()))}` : ""}</small></div><div className="hero-actions"><button className="button button-secondary" type="button" onClick={() => setFocusOpen(false)}>戻る</button><button className="button button-danger" type="button" onClick={stopFocus}>STOPして記録</button></div></> : <><h2 id="focus-title">まずSTART。時間を選ぶ。</h2><p id="focus-description">3・10・20分から選べます。時間が来ると自動終了し、途中でSTOPしたときも今日の証拠になります。</p><div className="duration-grid">{[3, 10, 20].map((minutes) => <button key={minutes} type="button" className={`duration-button ${focusTotalSeconds === minutes * 60 ? "selected" : ""}`} onClick={() => { setFocusTotalSeconds(minutes * 60); setFocusSeconds(0); }}><strong>{minutes}</strong><span>min</span></button>)}</div><div className="focus-noise"><div><strong>ピンクノイズ</strong><span>{noiseOn ? "再生中" : "オフ"}</span></div><button className="toggle-button" type="button" aria-pressed={noiseOn} onClick={toggleNoise}><span className={noiseOn ? "toggle-knob on" : "toggle-knob"} /><span>{noiseOn ? "On" : "Off"}</span></button></div><button className="button button-primary wide" type="button" onClick={beginFocus}>STARTする <span>→</span></button></>}</section></div>}
       {sessionSummary && <div className="modal-backdrop" role="presentation"><section ref={summaryModalRef} className="summary-modal" role="dialog" aria-modal="true" aria-labelledby="summary-title" aria-describedby="summary-description"><button ref={summaryCloseRef} className="modal-close" type="button" onClick={() => setSessionSummary(null)} aria-label="閉じる">×</button><p className="eyebrow accent">SESSION COMPLETE</p><h2 id="summary-title">積み上げを記録した。</h2><p id="summary-description">今日は画面を見ていた時間ではなく、正味の集中時間だけを進捗に加えました。</p><div className="summary-numbers"><div><strong>{formatTime(sessionSummary.studySeconds)}</strong><span>正味集中</span></div><div><strong>{formatTime(sessionSummary.awaySeconds)}</strong><span>スマホを置いた時間</span></div></div>{sessionEvidence && <div className="session-evidence"><div><strong>{sessionEvidence.questions}</strong><span>解いた問題</span></div><div><strong>{Math.max(0, sessionEvidence.routeEnd - sessionEvidence.routeStart)}</strong><span>進んだ概念</span></div><div><strong>{sessionEvidence.routeStart} → {sessionEvidence.routeEnd}</strong><span>ルート</span></div></div>}<p className="summary-reassurance">進捗は戻りません。次は1問だけでOK。</p><button className="button button-primary wide" type="button" onClick={continueToNextPractice}>次の1問へ <span>→</span></button></section></div>}
-      {setupOpen && <div className="modal-backdrop" role="presentation"><section ref={setupModalRef} className="setup-modal" role="dialog" aria-modal="true" aria-labelledby="setup-title" aria-describedby="setup-description"><div className="setup-mark">Σ</div><p className="eyebrow accent">YOUR STARTING POINT</p><h2 id="setup-title">数学を、概念からつなぐ。</h2><p id="setup-description">320の概念を依存順に並べ、毎日の「次の一手」だけを出します。まずは今の状態に近い入口を選んでください。</p><div className="setup-actions"><button ref={setupPrimaryRef} className="setup-choice primary" type="button" onClick={skipFoundation}><span><strong>数学I「数と式」から始める</strong><small>橋渡しを確認済みとして、I-01から始める</small></span><b>→</b></button><button className="setup-choice" type="button" onClick={startDiagnostic}><span><strong>橋渡しから1問ずつ始める</strong><small>F-01から順に解き、正答段階に合わせて同じ概念の問題を進める</small></span><b>→</b></button></div><small className="setup-note">あとから設定で記録を消去できます。</small></section></div>}
+      {setupOpen && <div className="modal-backdrop" role="presentation"><section ref={setupModalRef} className="setup-modal" role="dialog" aria-modal="true" aria-labelledby="setup-title" aria-describedby="setup-description"><div className="setup-mark">Σ</div><p className="eyebrow accent">YOUR STARTING POINT</p><h2 id="setup-title">まず1問だけ始める。</h2><p id="setup-description">320の概念を依存順に並べ、毎日の「次の一手」だけを出します。迷ったら、おすすめの1問を押せばそのまま始まります。</p><div className="setup-actions"><button ref={setupPrimaryRef} className="setup-choice primary" type="button" onClick={startDiagnostic}><span><strong>おすすめ：まず1問だけ始める</strong><small>F-01から説明を読み、3分以内の確認問題へ進む</small></span><b>→</b></button><button className="setup-choice" type="button" onClick={skipFoundation}><span><strong>数学I「数と式」から始める</strong><small>橋渡しを確認済みとして、I-01から始める</small></span><b>→</b></button></div><small className="setup-note">あとから設定で記録を消去できます。</small></section></div>}
     </main>
   );
 }

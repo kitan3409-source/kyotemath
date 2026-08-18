@@ -32,13 +32,13 @@ function optionsFor(correct: string, seed: number, extraDistractors: string[] = 
 
 function makeFallbackProblem(concept: Concept, kind: Problem["kind"], seed: number): Problem {
   const guide = fullCourseGuides()[concept.id];
-  const correct = kind === "quick" ? guide.definition : kind === "standard" ? guide.firstMove : concept.target;
+  const correct = kind === "quick" ? guide.definition : guide.firstMove;
   const prompt = kind === "quick"
     ? `「${concept.title}」の意味として最も適切なものは？`
     : kind === "standard"
       ? `「${concept.title}」を使う問題で、最初に行うべきことは？`
-      : `別の文脈で「${concept.title}」を使うとき、保つべき目標は？`;
-  const choice = optionsFor(correct, seed);
+      : `別の条件で「${concept.title}」を使うとき、計算前に確認すべき一手は？`;
+  const choice = optionsFor(correct, seed, kind === "transfer" ? [guide.trap, guide.definition, concept.target] : []);
   return {
     id: `AUTO-${concept.id}-${kind}`,
     conceptIds: [concept.id],
@@ -68,17 +68,17 @@ function makeLessonProblem(concept: Concept, kind: Problem["kind"], seed: number
   if (!lesson) return undefined;
   if (kind === "transfer") {
     const guide = fullCourseGuides()[concept.id];
-    const correct = lesson.quickCheck.answer;
-    const choice = optionsFor(correct, seed, [guide.trap, lesson.examSignal, lesson.quickCheck.answer, concept.target]);
+    const correct = lesson.examSignal;
+    const choice = optionsFor(correct, seed, [guide.firstMove, guide.trap, lesson.quickCheck.answer, concept.target]);
     return {
       id: `AUTO-${concept.id}-${kind}`,
       conceptIds: [concept.id],
       primaryConceptId: concept.id,
       title: `${concept.title}｜${kind}（条件を読む）`,
-      prompt: `転移練習：条件を読み直して、次の別問題の答えを求めよ。${lesson.quickCheck.problem}`,
+      prompt: `転移練習：${concept.title}の条件に対応する共テの見分け方として、最初に注目するサインは？ 状況：${lesson.quickCheck.problem}`,
       options: choice.options,
       answer: choice.answer,
-      explanation: `${lesson.quickCheck.explanation} ${lesson.examSignal} 条件が変わっても、定義・既知量・未知量を対応させてから処理する。`,
+      explanation: `${correct} ${lesson.quickCheck.explanation} 条件が変わっても、定義・既知量・未知量を対応させてから処理する。`,
       kind,
       estimatedSeconds: 120,
     };
@@ -131,12 +131,16 @@ function makeDelayedProblem(concept: Concept, base: Problem, seed: number): Prob
   const guide = fullCourseGuides()[concept.id];
   const definition = guide.definition.replace(/[。．]+$/u, "");
   const scope = scopeCardFor(concept) ?? scopeCardForAdvanced(concept.id);
-  const correct = scope?.transfer.answer ?? base.options[base.answer] ?? guide.firstMove;
-  const sourceOptions = scope?.transfer.distractors ?? base.options.filter((_, index) => index !== base.answer);
+  const correct = guide.firstMove;
+  const sourceOptions = [
+    scope?.transfer.answer,
+    ...(scope?.transfer.distractors ?? []),
+    ...base.options.filter((_, index) => index !== base.answer),
+    guide.trap,
+    concept.target,
+  ].filter((value): value is string => Boolean(value));
   const choice = optionsFor(correct, seed + 3, [...sourceOptions, guide.trap, "前回の答えをそのまま写す"]);
-  const prompt = scope
-    ? `遅延再テスト：資料を見ずに、${scope.transfer.prompt} 別の数値・条件でも同じ判断ができるかを確かめる。`
-    : `遅延再テスト：資料を見ずに、次の問題を解き直せ。${base.prompt} 条件を読み直し、答えの意味まで確認する。`;
+  const prompt = `遅延再テスト：${concept.title}の次の状況に戻る前に、最初に確認すべき一手は？ 状況：${base.prompt}`;
   return {
     id: `AUTO-${concept.id}-delayed`,
     conceptIds: [concept.id],
@@ -145,7 +149,7 @@ function makeDelayedProblem(concept: Concept, base: Problem, seed: number): Prob
     prompt,
     options: choice.options,
     answer: choice.answer,
-    explanation: `${correct}。${definition}。遅延再テストでは、同じ問題文の暗記ではなく、条件から答えを再現できたかを記録する。`,
+    explanation: `${correct}。${definition}。遅延再テストでは、同じ問題文の暗記ではなく、条件を見たときの最初の判断を再現できたかを記録する。`,
     kind: "transfer",
     estimatedSeconds: Math.max(base.estimatedSeconds, 90) + 15,
   };
