@@ -41,6 +41,7 @@ import {
   normalizeExamSession,
   scoreExam,
   createExamSession,
+  summarizeG5Evidence,
   type ExamForm,
   type ExamResult,
   type ExamSession,
@@ -149,12 +150,14 @@ function sanitizePracticeResume(
   practice: PracticeResumeState | undefined,
   sourceAttempts: Record<string, Attempt>,
   sourceMastery: Record<string, number>,
+  allowFoundationSkip = false,
 ) {
   if (!practice?.active) return practice;
   const problem = problemById.get(practice.problemId);
   if (!problem) return undefined;
   const concept = conceptById.get(practice.conceptId);
-  if (!concept || !concept.requires.every((id) => isMasteryComplete(sourceMastery[id]))) return undefined;
+  const foundationSkip = allowFoundationSkip && practice.conceptId === "I-01";
+  if (!concept || (!foundationSkip && !concept.requires.every((id) => isMasteryComplete(sourceMastery[id])))) return undefined;
   const level = sourceMastery[practice.conceptId] ?? 0;
   const dueAt = level === 3 ? effectiveDueAtForAttempt(sourceAttempts[practice.conceptId]) : undefined;
   const delayedAllowed = level === 3 && Boolean(dueAt && Date.parse(dueAt) <= Date.now());
@@ -178,7 +181,7 @@ function sanitizePracticeResume(
 }
 
 function isCommonTestConcept(concept: Concept) {
-  return Boolean(concept.id);
+  return ["I", "A", "II", "B", "C"].includes(concept.course) && concept.priority === "core";
 }
 const storageKeys = {
   mastery: "kyote-math-60:mastery",
@@ -189,6 +192,7 @@ const storageKeys = {
   studyDates: "kyote-math-60:study-dates",
   focus: "kyote-math-60:focus",
   studySession: "kyote-math-60:study-session",
+  foundationSkipped: "kyote-math-60:foundation-skipped",
 };
 
 function formatTime(seconds: number) {
@@ -376,6 +380,7 @@ export default function Home() {
   const [examHistory, setExamHistory] = useState<ExamResult[]>([]);
   const [examFormId, setExamFormId] = useState("IA-F1");
   const [selectedOptionalSectionIds, setSelectedOptionalSectionIds] = useState(["IIBC-02", "IIBC-03", "IIBC-04"]);
+  const [foundationSkipped, setFoundationSkipped] = useState(false);
   const [examNow, setExamNow] = useState(() => Date.now());
   const [setupOpen, setSetupOpen] = useState(false);
   const [focusOpen, setFocusOpen] = useState(false);
@@ -435,6 +440,8 @@ export default function Home() {
         setAwaySeconds(progress.awaySeconds);
         setGuideSeen(progress.guideSeen);
         setErrorHistory(normalizeErrorHistoryForContent(progress.errorHistory));
+        const storedFoundationSkipped = readStored(storageKeys.foundationSkipped) === "true";
+        setFoundationSkipped(storedFoundationSkipped);
         const restoredExam = normalizeExamSession(progress.examSession, Date.now());
         const usableExam = restoredExam && examFormById.has(restoredExam.formId) ? restoredExam : null;
         setExamSession(usableExam);
@@ -444,7 +451,7 @@ export default function Home() {
           setSelectedOptionalSectionIds(usableExam.selectedOptionalSectionIds);
           setActiveTab("mock");
         }
-        const restoredPractice = sanitizePracticeResume(normalizePracticeForContent(progress.practice), progress.attempts, initialMastery);
+        const restoredPractice = sanitizePracticeResume(normalizePracticeForContent(progress.practice), progress.attempts, initialMastery, storedFoundationSkipped);
         if (restoredPractice?.active) {
           setPracticeResumeActive(true);
           setSelectedConceptId(restoredPractice.conceptId);
@@ -534,7 +541,7 @@ export default function Home() {
           setSelectedOptionalSectionIds(usableExam.selectedOptionalSectionIds);
           setActiveTab("mock");
         }
-        const restoredPractice = sanitizePracticeResume(normalizePracticeForContent(progress.practice), progress.attempts, syncedMastery);
+        const restoredPractice = sanitizePracticeResume(normalizePracticeForContent(progress.practice), progress.attempts, syncedMastery, readStored(storageKeys.foundationSkipped) === "true");
         if (restoredPractice?.active) {
           setPracticeResumeActive(true);
           setSelectedConceptId(restoredPractice.conceptId);
@@ -567,7 +574,7 @@ export default function Home() {
       ? { active: true, conceptId: selectedConceptId, problemId: practiceProblemId, phase: practicePhase, lessonStep, answer: practiceAnswer, feedback: practiceFeedback, errorCause: practiceErrorCause, reviewCause: practiceReviewCause }
       : undefined;
     void saveProgress({ mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice, errorHistory, examSession: examSession ?? undefined, examHistory });
-  }, [attempts, awaySeconds, errorHistory, examHistory, examSession, guideSeen, hydrated, lessonStep, mastery, practiceAnswer, practiceErrorCause, practiceFeedback, practicePhase, practiceProblemId, practiceResumeActive, practiceReviewCause, selectedConceptId, studyDates, studySeconds]);
+  }, [attempts, awaySeconds, errorHistory, examHistory, examSession, foundationSkipped, guideSeen, hydrated, lessonStep, mastery, practiceAnswer, practiceErrorCause, practiceFeedback, practicePhase, practiceProblemId, practiceResumeActive, practiceReviewCause, selectedConceptId, studyDates, studySeconds]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -639,7 +646,7 @@ export default function Home() {
     const timeout = window.setTimeout(() => {
       const form = examFormById.get(examSession.formId);
       if (!form || !isExamExpired(examSession, new Date())) return;
-      const submittedAt = new Date().toISOString();
+      const submittedAt = examSession.deadlineAt;
       const result = scoreExam(form, examSession.answers, examSession.selectedOptionalSectionIds, examSession.startedAt, submittedAt, true);
       setExamHistory((previous) => previous.some((entry) => entry.formId === result.formId && entry.startedAt === result.startedAt)
         ? previous
@@ -763,6 +770,7 @@ export default function Home() {
   const latestExamResult = examSession?.finished && examSession.submittedAt
     ? examHistory.find((result) => result.formId === examSession.formId && result.submittedAt === examSession.submittedAt) ?? examHistory.filter((result) => result.formId === examSession.formId).at(-1)
     : undefined;
+  const g5Evidence = summarizeG5Evidence(examHistory);
 
   const filteredConcepts = (() => {
     const query = mapSearch.trim().toLowerCase();
@@ -1080,6 +1088,12 @@ export default function Home() {
     else setSelectedOptionalSectionIds([]);
   }
 
+  function chooseExamPaper(paper: ExamForm["paper"]) {
+    if (examSession?.active) return;
+    const firstForm = examForms.find((form) => form.paper === paper);
+    if (firstForm) chooseExamForm(firstForm.id);
+  }
+
   function toggleOptionalSection(sectionId: string) {
     if (examSession?.active) return;
     setSelectedOptionalSectionIds((previous) => {
@@ -1122,14 +1136,15 @@ export default function Home() {
     setExamSession((previous) => previous ? { ...previous, index: Math.min(currentExamQuestions.length - 1, Math.max(0, previous.index + delta)) } : previous);
   }
 
-  function finishExam(timedOut = false) {
+  function finishExam(timedOut = false, submittedAtOverride?: string) {
     const session = examSession;
     if (!session?.active) return;
     const form = examFormById.get(session.formId);
     if (!form) return;
     const expired = isExamExpired(session, new Date());
-    const submittedAt = new Date().toISOString();
-    const result = scoreExam(form, session.answers, session.selectedOptionalSectionIds, session.startedAt, submittedAt, timedOut || expired);
+    const isTimedOut = timedOut || expired;
+    const submittedAt = isTimedOut ? (submittedAtOverride ?? session.deadlineAt) : new Date().toISOString();
+    const result = scoreExam(form, session.answers, session.selectedOptionalSectionIds, session.startedAt, submittedAt, isTimedOut);
     setExamHistory((previous) => previous.some((entry) => entry.formId === result.formId && entry.startedAt === result.startedAt)
       ? previous
       : [...previous, result].slice(-30));
@@ -1142,6 +1157,8 @@ export default function Home() {
   function skipFoundation() {
     const mergedMastery = { ...mastery };
     const initialPractice: PracticeResumeState = { active: true, conceptId: "I-01", problemId: "Q-I01-01", phase: "lesson", lessonStep: "overview", answer: null, feedback: null, errorCause: null, reviewCause: null };
+    setFoundationSkipped(true);
+    writeStored(storageKeys.foundationSkipped, "true");
     setMastery(mergedMastery);
     void saveProgress({ mastery: mergedMastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice: initialPractice, errorHistory });
     setSelectedConceptId("I-01");
@@ -1159,6 +1176,8 @@ export default function Home() {
   }
 
   function startDiagnostic() {
+    setFoundationSkipped(false);
+    removeStored(storageKeys.foundationSkipped);
     writeStored(storageKeys.initialized, "true");
     setSetupOpen(false);
     setSelectedConceptId("F-01");
@@ -1225,6 +1244,8 @@ export default function Home() {
         setSelectedOptionalSectionIds(usableExam.selectedOptionalSectionIds);
       }
       const importedPractice = sanitizePracticeResume(normalizePracticeForContent(imported.practice), imported.attempts, imported.mastery);
+      setFoundationSkipped(false);
+      removeStored(storageKeys.foundationSkipped);
       if (importedPractice?.active) {
         setPracticeResumeActive(true);
         setSelectedConceptId(importedPractice.conceptId);
@@ -1262,6 +1283,8 @@ export default function Home() {
     removeStored(storageKeys.initialized);
     removeStored(storageKeys.focus);
     removeStored(storageKeys.studySession);
+    removeStored(storageKeys.foundationSkipped);
+    setFoundationSkipped(false);
     setMastery({});
     setAttempts({});
     setStudyDates([]);
@@ -1476,13 +1499,19 @@ export default function Home() {
       const selectedForm = examFormById.get(examFormId) ?? examForms[0];
       const isIibc = selectedForm.paper === "math2bc";
       const isMath3 = selectedForm.paper === "math3";
+      const examPaperOptions: Array<{ paper: ExamForm["paper"]; label: string }> = [
+        { paper: "math1a", label: "数学I・数学A" },
+        { paper: "math2bc", label: "数学II・数学B・数学C" },
+        { paper: "math3", label: "数学III" },
+      ];
       const durationMinutes = Math.round(selectedForm.durationSeconds / 60);
       const paperLabel = selectedForm.paper === "math1a" ? "数学I・数学A" : selectedForm.paper === "math2bc" ? "数学II・数学B・数学C" : "数学III";
       return <div className="page-stack">
         <div className="page-heading"><div><p className="eyebrow accent">{isMath3 ? "MATH III INTEGRATION" : "FULL EXAM MODE"}</p><h2>{isMath3 ? "数学IIIを横断して測る" : "本番と同じ時間で測る"}</h2><p>オリジナルの連続誘導フォーム。解説は提出後だけに表示し、練習の正答率とは別に記録します。</p></div><span className="mode-badge">{durationMinutes}分 / 100点</span></div>
-        <section className="mock-intro panel-card"><div className="mock-number">{durationMinutes}</div><div><p className="eyebrow">{isMath3 ? "INTEGRATED MATH III TRACK" : "OFFICIAL FORMAT TARGET"}</p><h3>{paperLabel}</h3><p>制限時間{durationMinutes}分、満点100点。未解答は0点として記録し、時間切れならその時点で自動提出します。</p><div className="exam-form-grid">{examForms.filter((form) => form.paper === selectedForm.paper).map((form) => <button className={`button ${examFormId === form.id ? "button-primary" : "button-ghost"}`} type="button" key={form.id} onClick={() => chooseExamForm(form.id)}>{form.title}</button>)}</div></div></section>
+        <section className="mock-intro panel-card"><div className="mock-number">{durationMinutes}</div><div><p className="eyebrow">{isMath3 ? "INTEGRATED MATH III TRACK" : "OFFICIAL FORMAT TARGET"}</p><h3>{paperLabel}</h3><p>制限時間{durationMinutes}分、満点100点。未解答は0点として記録し、時間切れならその時点で自動提出します。</p><div className="exam-paper-grid" role="tablist" aria-label="模試科目">{examPaperOptions.map((option) => <button className={`button ${selectedForm.paper === option.paper ? "button-primary" : "button-ghost"}`} type="button" role="tab" aria-selected={selectedForm.paper === option.paper} key={option.paper} onClick={() => chooseExamPaper(option.paper)}>{option.label}</button>)}</div><div className="exam-form-grid">{examForms.filter((form) => form.paper === selectedForm.paper).map((form) => <button className={`button ${examFormId === form.id ? "button-primary" : "button-ghost"}`} type="button" key={form.id} onClick={() => chooseExamForm(form.id)}>{form.title}</button>)}</div></div></section>
         {isIibc && <section className="exam-section-picker panel-card"><p className="eyebrow accent">SELECT 3 OF 4</p><h3>選択分野を3つ固定する</h3><p>開始後は変更できません。選んだ3分野だけが100点に含まれます。</p><div className="exam-option-grid">{selectedForm.optionalSectionIds.map((sectionId) => { const section = selectedForm.sections.find((candidate) => candidate.id === sectionId); const selected = selectedOptionalSectionIds.includes(sectionId); return <button className={`exam-option ${selected ? "selected" : ""}`} type="button" aria-pressed={selected} key={sectionId} onClick={() => toggleOptionalSection(sectionId)}><strong>{section?.title ?? sectionId}</strong><span>{selected ? "選択中" : "未選択"}</span></button>; })}</div><small>現在 {selectedOptionalSectionIds.length} / 3 分野</small></section>}
         <section className="mock-rules panel-card"><span>01　{durationMinutes}分を厳守</span><span>02　途中保存・再開</span><span>03　提出後に採点</span></section>
+        <section className="g5-gate panel-card"><div className="section-heading"><div><p className="eyebrow accent">G5 EVIDENCE GATE</p><h3>未見6フォームの初回提出</h3></div><strong>{g5Evidence.observedCount} / 6</strong></div><p>IA-F1〜F3、IIBC-F1〜F3を各1回ずつ記録します。再受験で初回結果を上書きせず、60点・70分以内・時間切れなしを機械判定します。最終的なG5判定は実ユーザーの記録を監査して確定します。</p><div className="g5-grid">{g5Evidence.rows.map((row) => { const result = row.result; const status = row.status === "passed" ? "条件達成" : row.status === "failed" ? "条件未達" : "未提出"; return <div className={`g5-row ${row.status}`} key={row.formId}><strong>{row.formId}</strong><span>{result ? `${result.score}/100 · ${formatTime(result.elapsedSeconds)} · 未解答${result.unanswered.length}` : "初回提出なし"}</span><em>{status}</em>{row.reasons.length > 0 && <small>{row.reasons.join(" ")}</small>}</div>; })}</div></section>
         <button className="button button-primary wide" type="button" disabled={isIibc && selectedOptionalSectionIds.length !== 3} onClick={() => startExam(selectedForm.id)}>このフォームを開始 <span>→</span></button>
         {examHistory.length > 0 && <section className="exam-history panel-card"><p className="eyebrow">RECORDED RESULTS</p><h3>過去の提出</h3>{examHistory.slice().reverse().slice(0, 6).map((result) => <div className="exam-history-row" key={`${result.formId}-${result.submittedAt}`}><span>{result.formId}</span><strong>{result.score} / {result.totalPoints}</strong><span>{result.timedOut ? "時間切れ" : "提出"} · {result.unanswered.length}問未解答</span></div>)}</section>}
       </div>;
@@ -1520,7 +1549,7 @@ export default function Home() {
           <article className="setting-card panel-card"><div><p className="eyebrow">IOS START</p><h3>ホーム画面に追加</h3><p>Safariの共有ボタンから「ホーム画面に追加」。追加後もオフラインで使えます。</p></div><span className="setting-hint">Safari → 共有 → 追加</span></article>
           <article className="setting-card panel-card danger-card"><div><p className="eyebrow">RESET</p><h3>最初からやり直す</h3><p>概念の到達度と正答履歴を消去する。</p></div><button className="button button-danger" type="button" onClick={resetData}>記録を消去</button></article>
         </section>
-        <section className="about-card panel-card"><div className="about-mark">Σ</div><div><p className="eyebrow">ABOUT THIS BUILD</p><h3>共テ数学60 / v0.6 · 4X CONTENT BUILD</h3><p>高校数学 I・A・II・B・C・III を320概念に分解したローカルファーストPWA。共テ225概念と橋渡し21概念に{lessonModules.length}本の本編レッスン、{Object.keys(conceptGuides).length}件の短編ガイド、{problemBank.length}問を接続し、外部教材なしで「解説 → 例題 → 確認問題」へ進める。</p></div></section>
+        <section className="about-card panel-card"><div className="about-mark">Σ</div><div><p className="eyebrow">ABOUT THIS BUILD</p><h3>共テ数学60 / v0.6 · 4X CONTENT BUILD</h3><p>高校数学 I・A・II・B・C・III を320概念に分解したローカルファーストPWA。共テ幹線{commonTestConcepts.length}概念と橋渡し21概念に{lessonModules.length}本の本編レッスン、{Object.keys(conceptGuides).length}件の短編ガイド、{problemBank.length}問を接続し、外部教材なしで「解説 → 例題 → 確認問題」へ進める。</p></div></section>
       </div>
     );
   }

@@ -13,11 +13,13 @@ const lessonFiles = [
 const lessonSource = lessonFiles.map((file) => fs.readFileSync(file, "utf8")).join("\n");
 const authoredLessonIds = new Set([...lessonSource.matchAll(/conceptId:\s*"([A-Z]+-\d+)"/g)].map((match) => match[1]));
 
-const [{ math3Problems }, { math3Specs }, cards, advanced] = await Promise.all([
+const [{ math3Problems }, { math3Specs }, cards, advanced, { problemExpansionBulk }, { problemBank }] = await Promise.all([
   import("../app/content/math3-problems.ts"),
   import("../app/content/math3-course.ts"),
   import("../app/content/scope-cards.ts"),
   import("../app/content/scope-cards-advanced.ts"),
+  import("../app/content/problem-expansion-bulk.ts"),
+  import("../app/problem-bank.ts"),
 ]);
 
 const errors = [];
@@ -39,6 +41,22 @@ for (const concept of generatedNonIII) {
   }
   if (new Set([scope.quick.prompt, scope.standard.prompt, scope.transfer.prompt]).size !== 3) errors.push(`${concept.id}: duplicate scope prompts`);
   if (!scope.workedExample?.problem || scope.workedExample.steps.length < 2 || !scope.workedExample.answer) errors.push(`${concept.id}: incomplete worked example`);
+}
+
+const genericBulkPatterns = ["意味・定義として正しいもの", "最初の一手として最も適切", "典型的な罠を見抜く"];
+for (const problem of problemExpansionBulk) {
+  if (!problem.id.startsWith("X4-B")) errors.push(`${problem.id}: bulk ID prefix is invalid`);
+  if (problem.options.length !== 4 || new Set(problem.options).size !== 4) errors.push(`${problem.id}: bulk options are not four unique choices`);
+  if (!Number.isInteger(problem.answer) || problem.answer < 0 || problem.answer >= problem.options.length) errors.push(`${problem.id}: bulk answer is invalid`);
+  if (genericBulkPatterns.some((pattern) => problem.prompt.includes(pattern))) errors.push(`${problem.id}: bulk prompt is still a meta template`);
+  if (!/[0-9０-９]/u.test(problem.prompt)) errors.push(`${problem.id}: bulk prompt has no concrete numeric condition`);
+  if (!problem.explanation.includes(problem.options[problem.answer])) errors.push(`${problem.id}: bulk explanation omits the correct option`);
+}
+
+const delayedProblems = problemBank.filter((problem) => problem.id.endsWith("-delayed"));
+for (const problem of delayedProblems) {
+  if (!problem.prompt.includes("遅延再テスト")) errors.push(`${problem.id}: delayed prompt is missing its measurement label`);
+  if (problem.prompt.includes("最初に確認すべきことを選べ")) errors.push(`${problem.id}: delayed prompt is still a generic template`);
 }
 
 const math3Ids = Object.keys(math3Specs);
@@ -65,6 +83,9 @@ const result = {
   concreteCards: cardIds.size,
   math3Concepts: math3Ids.length,
   math3Problems: math3Problems.length,
+  bulkProblems: problemExpansionBulk.length,
+  delayedProblems: delayedProblems.length,
+  concreteBulkProblems: problemExpansionBulk.filter((problem) => /[0-9０-９]/u.test(problem.prompt)).length,
   fallbackRisk: missingCards.length,
   errors,
 };

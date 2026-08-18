@@ -16,14 +16,14 @@ type Concept = (typeof conceptData.concepts)[number];
 const kinds: Problem["kind"][] = ["quick", "standard", "transfer"];
 
 function optionsFor(correct: string, seed: number, extraDistractors: string[] = []) {
-  const distractors = [
+  const distractors = [...new Set([
     ...extraDistractors,
     "用語の名前だけを答える",
     "条件を確認せずに計算を始める",
     "前提と結論を逆にする",
     "別の概念の公式を使う",
     "この情報だけでは判断できない",
-  ].filter((value) => value !== correct).slice(0, 3);
+  ].filter((value) => value !== correct))].slice(0, 3);
   const values = [correct, ...distractors];
   const shift = seed % values.length;
   const options = values.map((_, index) => values[(index - shift + values.length) % values.length]);
@@ -68,17 +68,17 @@ function makeLessonProblem(concept: Concept, kind: Problem["kind"], seed: number
   if (!lesson) return undefined;
   if (kind === "transfer") {
     const guide = fullCourseGuides()[concept.id];
-    const correct = guide.firstMove;
+    const correct = lesson.quickCheck.answer;
     const choice = optionsFor(correct, seed, [guide.trap, lesson.examSignal, lesson.quickCheck.answer, concept.target]);
     return {
       id: `AUTO-${concept.id}-${kind}`,
       conceptIds: [concept.id],
       primaryConceptId: concept.id,
-      title: `${concept.title}｜${kind}（新しい文脈）`,
-      prompt: `転用：別の問題で「${concept.target}」を求めるとき、最初の一手として最も適切なのは？`,
+      title: `${concept.title}｜${kind}（条件を読む）`,
+      prompt: `転移練習：条件を読み直して、次の別問題の答えを求めよ。${lesson.quickCheck.problem}`,
       options: choice.options,
       answer: choice.answer,
-      explanation: `${correct}。${lesson.examSignal} 条件が変わっても、定義・既知量・未知量を対応させてから処理する。`,
+      explanation: `${lesson.quickCheck.explanation} ${lesson.examSignal} 条件が変わっても、定義・既知量・未知量を対応させてから処理する。`,
       kind,
       estimatedSeconds: 120,
     };
@@ -129,17 +129,23 @@ function makeScopeProblem(concept: Concept, kind: Problem["kind"], seed: number)
 
 function makeDelayedProblem(concept: Concept, base: Problem, seed: number): Problem {
   const guide = fullCourseGuides()[concept.id];
-  const correct = guide.firstMove;
-  const choice = optionsFor(correct, seed + 3, [guide.trap, concept.target, "前回の答えをそのまま写す"]);
+  const definition = guide.definition.replace(/[。．]+$/u, "");
+  const scope = scopeCardFor(concept) ?? scopeCardForAdvanced(concept.id);
+  const correct = scope?.transfer.answer ?? base.options[base.answer] ?? guide.firstMove;
+  const sourceOptions = scope?.transfer.distractors ?? base.options.filter((_, index) => index !== base.answer);
+  const choice = optionsFor(correct, seed + 3, [...sourceOptions, guide.trap, "前回の答えをそのまま写す"]);
+  const prompt = scope
+    ? `遅延再テスト：資料を見ずに、${scope.transfer.prompt} 別の数値・条件でも同じ判断ができるかを確かめる。`
+    : `遅延再テスト：資料を見ずに、次の問題を解き直せ。${base.prompt} 条件を読み直し、答えの意味まで確認する。`;
   return {
     id: `AUTO-${concept.id}-delayed`,
     conceptIds: [concept.id],
     primaryConceptId: concept.id,
     title: `${concept.title}｜delayed retest`,
-    prompt: `時間を置いた別形式の再テスト：「${concept.target}」を求める問題で、最初に確認すべきことを選べ。前回の解法を見ずに答える。`,
+    prompt,
     options: choice.options,
     answer: choice.answer,
-    explanation: `${correct}。${guide.definition} 遅延再テストでは、同じ問題文の暗記ではなく、判断の入口を再現できたかを記録する。`,
+    explanation: `${correct}。${definition}。遅延再テストでは、同じ問題文の暗記ではなく、条件から答えを再現できたかを記録する。`,
     kind: "transfer",
     estimatedSeconds: Math.max(base.estimatedSeconds, 90) + 15,
   };

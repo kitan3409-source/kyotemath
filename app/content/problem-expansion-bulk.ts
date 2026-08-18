@@ -1,105 +1,102 @@
 import conceptData from "../../data/math-concepts.json" with { type: "json" };
 import type { Problem } from "../problem-bank";
 import { fullCourseGuides } from "./full-course.ts";
+import { scopeCardFor, type ScopeExercise } from "./scope-cards.ts";
+import { scopeCardForAdvanced } from "./scope-cards-advanced.ts";
+import { lessonModules as lessonModules01, type LessonModule } from "./lesson-modules.ts";
+import { lessonModulesBatch02 } from "./lesson-modules-batch-02.ts";
+import { lessonModulesBatch03 } from "./lesson-modules-batch-03.ts";
+import { lessonModulesBatch04a } from "./lesson-modules-batch-04a.ts";
+import { lessonModulesBatch04b } from "./lesson-modules-batch-04b.ts";
+import { lessonModulesBatch05a } from "./lesson-modules-batch-05a.ts";
+import { lessonModulesBatch05b } from "./lesson-modules-batch-05b.ts";
 
 /**
  * 共通テスト対象の各概念に、quick / standard / transferを1問ずつ割り当てる補強バンク。
- * 問題の本文は概念ごとの定義・最初の一手・典型的な罠から作る。
- * 数字だけを差し替えた別概念の問題を割り当てないため、概念IDと測定内容が一致する。
+ * 問題の本文はscope cardまたは手書きレッスンの例題から作る。
+ * 概念名だけを問うメタ質問を避け、数値・条件・式を含む補強問題にする。
  */
 type Concept = (typeof conceptData.concepts)[number];
 type Kind = Problem["kind"];
-type Spec = {
-  title: string;
-  prompt: string;
-  correct: string;
-  distractors: string[];
-  explanation: string;
-};
-
 const kinds: Kind[] = ["quick", "standard", "transfer"];
 const targetConcepts = conceptData.concepts.filter(
   (concept) => ["I", "A", "II", "B", "C"].includes(concept.course) && concept.priority === "core",
 );
 const guides = fullCourseGuides();
+const authoredLessonByConcept = new Map<string, LessonModule>([
+  ...lessonModules01,
+  ...lessonModulesBatch02,
+  ...lessonModulesBatch03,
+  ...lessonModulesBatch04a,
+  ...lessonModulesBatch04b,
+  ...lessonModulesBatch05a,
+  ...lessonModulesBatch05b,
+].map((lesson) => [lesson.conceptId, lesson] as const));
 
 function choose(correct: string, distractors: string[], seed: number) {
-  const values = [correct, ...distractors];
-  const shift = seed % 4;
-  const options = values.map((_, index) => values[(index - shift + 4) % 4]);
+  const values = [...new Set([correct, ...distractors.filter((value) => value !== correct)])].slice(0, 4);
+  const fallback = [`${correct}ではない値を選ぶ。`, "条件を一つ読み落とした結果", "計算前の式の形"];
+  for (const value of fallback) {
+    if (values.length >= 4) break;
+    if (!values.includes(value) && value !== correct) values.push(value);
+  }
+  const shift = seed % values.length;
+  const options = values.map((_, index) => values[(index - shift + values.length) % values.length]);
   return { options, answer: options.indexOf(correct) };
 }
 
-function distractorsFor(concept: Concept, variant: number) {
-  if (variant === 0) {
-    return [
-      `「${concept.title}」を、条件や定義を確認せず数値だけ計算すること。`,
-      `「${concept.title}」は、問題に出た記号の名前をそのまま答えること。`,
-      `「${concept.title}」では、どの問題にも同じ公式を条件なしで使うこと。`,
-    ];
-  }
-  if (variant === 1) {
-    return [
-      "問題文の条件を読まず、記憶した公式をいきなり適用する。",
-      "答えの選択肢から逆算し、定義や条件を確認しない。",
-      "必要な量を整理せず、計算結果を最後に推測する。",
-    ];
-  }
-  return [
-    "定義と条件を確認してから、対象概念に沿って処理する。",
-    "必要な条件を式・図・表に整理し、答えを検算する。",
-    "別の公式を決め打ちせず、問題の対象概念との対応を確かめる。",
-  ];
-}
-
-function specFor(concept: Concept, variant: number): Spec {
-  const guide = guides[concept.id];
-  if (variant === 0) {
-    const correct = guide.definition;
-    return {
-      title: "意味を定義から確認",
-      prompt: `「${concept.id} ${concept.title}」について、意味・定義として正しいものはどれか。`,
-      correct,
-      distractors: distractorsFor(concept, variant),
-      explanation: `この概念の定義は「${correct}」。まず何を表す概念かを固定してから計算へ進む。`,
-    };
-  }
-  if (variant === 1) {
-    const correct = guide.firstMove;
-    return {
-      title: "最初の一手を選ぶ",
-      prompt: `「${concept.id} ${concept.title}」を使う問題で、最初の一手として最も適切なものはどれか。`,
-      correct,
-      distractors: distractorsFor(concept, variant),
-      explanation: `最初に行うのは「${correct}」。条件を整理してから式・図・表へ移す。`,
-    };
-  }
-  const correct = guide.trap;
+function lessonExercise(lesson: LessonModule, kind: Kind): ScopeExercise {
+  if (kind === "quick") return { prompt: lesson.quickCheck.problem, answer: lesson.quickCheck.answer, explanation: lesson.quickCheck.explanation, distractors: [] };
+  if (kind === "standard") return { prompt: lesson.workedExample.problem, answer: lesson.workedExample.answer, explanation: lesson.workedExample.steps.join(" "), distractors: [] };
   return {
-    title: "典型的な罠を見抜く",
-    prompt: `「${concept.id} ${concept.title}」で起こりやすい誤り・注意点として正しいものはどれか。`,
-    correct,
-    distractors: distractorsFor(concept, variant),
-    explanation: `注意点は「${correct}」。答えを出した後も、この条件を使って検算する。`,
+    prompt: `条件を読み直して、次の例題で最終的に求める量を答えよ：${lesson.workedExample.problem}`,
+    answer: lesson.workedExample.answer,
+    explanation: `${lesson.workedExample.steps.join(" ")} 条件を読み直し、答えが何を表すかを確認する。`,
+    distractors: [],
   };
 }
 
-function makeProblem(concept: Concept, index: number, variant: number, spec: Spec): Problem {
-  const choice = choose(spec.correct, spec.distractors, index + variant);
+function sourceFor(concept: Concept, kind: Kind): ScopeExercise {
+  const scope = scopeCardFor(concept) ?? scopeCardForAdvanced(concept.id);
+  if (scope) return scope[kind];
+  const lesson = authoredLessonByConcept.get(concept.id);
+  if (lesson) return lessonExercise(lesson, kind);
+  const guide = guides[concept.id];
+  return {
+    prompt: `次の目標を達成するために必要な判断を答えよ：${concept.target}`,
+    answer: guide.firstMove,
+    explanation: `${guide.firstMove} ${guide.trap}`,
+    distractors: [],
+  };
+}
+
+function distractorsFor(concept: Concept, exercise: ScopeExercise, kind: Kind) {
+  const guide = guides[concept.id];
+  return [
+    ...exercise.distractors,
+    guide.trap,
+    `「${concept.title}」の条件を一つ無視した処理`,
+    kind === "quick" ? guide.firstMove : "答えの単位・符号・定義域を確認しない処理",
+  ];
+}
+
+function makeProblem(concept: Concept, index: number, kind: Kind, variant: number): Problem {
+  const exercise = sourceFor(concept, kind);
+  const choice = choose(exercise.answer, distractorsFor(concept, exercise, kind), index + variant);
   return {
     id: "X4-B" + String(index * 3 + variant + 1).padStart(3, "0"),
     conceptIds: [concept.id],
     primaryConceptId: concept.id,
-    title: concept.title + "｜" + spec.title,
-    prompt: spec.prompt,
+    title: `${concept.title}｜補強${kind}`,
+    prompt: `補強演習（${concept.id}）：${exercise.prompt}`,
     options: choice.options,
     answer: choice.answer,
-    explanation: spec.explanation,
-    kind: kinds[variant],
-    estimatedSeconds: 45 + variant * 15,
+    explanation: `正答は「${exercise.answer}」。${exercise.explanation} ${concept.title}では、問題文の条件と答えの意味を最後に照合する。`,
+    kind,
+    estimatedSeconds: kind === "quick" ? 60 : kind === "standard" ? 100 : 140,
   };
 }
 
 export const problemExpansionBulk: Problem[] = targetConcepts.flatMap((concept, index) =>
-  kinds.map((_, variant) => makeProblem(concept, index, variant, specFor(concept, variant))),
+  kinds.map((kind, variant) => makeProblem(concept, index, kind, variant)),
 );

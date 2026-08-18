@@ -83,6 +83,21 @@ export const EXAM_CONFIG = {
   math3: { label: "数学III", durationSeconds: 100 * 60, totalPoints: 100 },
 } as const;
 
+export const G5_FORM_IDS = ["IA-F1", "IA-F2", "IA-F3", "IIBC-F1", "IIBC-F2", "IIBC-F3"] as const;
+export type G5FormId = (typeof G5_FORM_IDS)[number];
+export type G5EvidenceRow = {
+  formId: G5FormId;
+  result?: ExamResult;
+  status: "missing" | "failed" | "passed";
+  reasons: string[];
+};
+export type G5EvidenceSummary = {
+  rows: G5EvidenceRow[];
+  observedCount: number;
+  passedCount: number;
+  allConditionsMet: boolean;
+};
+
 type SectionTemplate = {
   id: string;
   title: string;
@@ -620,4 +635,35 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
       && sectionScore === score
       && sectionUnanswered === entry.unanswered.length;
   }).slice(-30);
+}
+
+/**
+ * G5の実測条件を、フォームごとの初回提出だけで判定する。
+ * 同じフォームの再受験で初回失敗を隠せないよう、最初のsubmittedAtを採用する。
+ * ここでのpassedはアプリ内の条件判定であり、実ユーザーの監査結果そのものではない。
+ */
+export function summarizeG5Evidence(history: ExamResult[]): G5EvidenceSummary {
+  const rows = G5_FORM_IDS.map((formId): G5EvidenceRow => {
+    const first = history
+      .filter((result) => result.formId === formId)
+      .slice()
+      .sort((left, right) => left.submittedAt.localeCompare(right.submittedAt))[0];
+    if (!first) return { formId, status: "missing", reasons: ["初回提出の記録がありません。"] };
+    const reasons: string[] = [];
+    const limit = first.paper === "math1a" || first.paper === "math2bc"
+      ? EXAM_CONFIG.math1a.durationSeconds
+      : EXAM_CONFIG.math3.durationSeconds;
+    if (first.totalPoints !== 100) reasons.push("満点が100点ではありません。");
+    if (first.score < 60) reasons.push("60点未満です。");
+    if (first.timedOut) reasons.push("時間切れです。");
+    if (first.elapsedSeconds > limit) reasons.push("制限時間を超えています。");
+    return { formId, result: first, status: reasons.length === 0 ? "passed" : "failed", reasons };
+  });
+  const passedCount = rows.filter((row) => row.status === "passed").length;
+  return {
+    rows,
+    observedCount: rows.filter((row) => row.result).length,
+    passedCount,
+    allConditionsMet: rows.length === G5_FORM_IDS.length && passedCount === G5_FORM_IDS.length,
+  };
 }

@@ -6,10 +6,12 @@ import {
   createExamSession,
   eligibleSectionIds,
   examQuestions,
+  G5_FORM_IDS,
   isExamExpired,
   normalizeExamHistory,
   normalizeExamSession,
   scoreExam,
+  summarizeG5Evidence,
 } from "../app/exam-engine.ts";
 
 function problem(id, conceptIds, title) {
@@ -158,4 +160,31 @@ test("follow-up questions materialize from the learner's previous answer", () =>
   assert.notEqual(changed?.answer, baselineFollowUp?.answer);
   assert.notEqual(changed?.prompt, baselineFollowUp?.prompt);
   assert.notEqual(changed?.explanation, baselineFollowUp?.explanation);
+});
+
+test("G5 evidence uses the first submission for each IA and IIBC form", () => {
+  const forms = buildExamForms(syntheticBank());
+  const formById = new Map(forms.map((form) => [form.id, form]));
+  const resultFor = (formId, minutes, answers, timedOut = false) => {
+    const form = formById.get(formId);
+    const selected = form.paper === "math2bc" ? ["IIBC-02", "IIBC-03", "IIBC-04"] : [];
+    const questions = examQuestions(form, selected);
+    const completeAnswers = answers ?? Object.fromEntries(questions.map((question) => [question.id, question.answer]));
+    const startedAt = "2026-08-18T00:00:00.000Z";
+    const submittedAt = new Date(Date.parse(startedAt) + minutes * 60_000).toISOString();
+    return scoreExam(form, completeAnswers, selected, startedAt, submittedAt, timedOut);
+  };
+  const valid = G5_FORM_IDS.map((formId) => resultFor(formId, 60));
+  const summary = summarizeG5Evidence(valid);
+  assert.equal(summary.observedCount, 6);
+  assert.equal(summary.passedCount, 6);
+  assert.equal(summary.allConditionsMet, true);
+
+  const failedFirst = resultFor("IA-F1", 60, {});
+  const laterPass = resultFor("IA-F1", 60);
+  const retried = summarizeG5Evidence([failedFirst, laterPass, ...valid.filter((result) => result.formId !== "IA-F1")]);
+  const firstRow = retried.rows.find((row) => row.formId === "IA-F1");
+  assert.equal(firstRow.status, "failed");
+  assert.match(firstRow.reasons.join(" "), /60点未満/);
+  assert.equal(retried.allConditionsMet, false);
 });
