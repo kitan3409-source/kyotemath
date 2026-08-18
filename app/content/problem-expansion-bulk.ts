@@ -49,9 +49,9 @@ function lessonExercise(lesson: LessonModule, kind: Kind): ScopeExercise {
   if (kind === "quick") return { prompt: lesson.quickCheck.problem, answer: lesson.quickCheck.answer, explanation: lesson.quickCheck.explanation, distractors: [] };
   if (kind === "standard") return { prompt: lesson.workedExample.problem, answer: lesson.workedExample.answer, explanation: lesson.workedExample.steps.join(" "), distractors: [] };
   return {
-    prompt: `条件を読み直して、次の例題で最終的に求める量を答えよ：${lesson.workedExample.problem}`,
-    answer: lesson.workedExample.answer,
-    explanation: `${lesson.workedExample.steps.join(" ")} 条件を読み直し、答えが何を表すかを確認する。`,
+    prompt: `転移問題（例題とは別の表現）：${lesson.quickCheck.problem}`,
+    answer: lesson.quickCheck.answer,
+    explanation: `${lesson.quickCheck.explanation} 例題と表現が変わっても、条件から必要な量を決めて答えの意味を確認する。`,
     distractors: [],
   };
 }

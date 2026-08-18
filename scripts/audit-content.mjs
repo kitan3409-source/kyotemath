@@ -52,6 +52,17 @@ for (const problem of problemExpansionBulk) {
   if (!/[0-9０-９]/u.test(problem.prompt)) errors.push(`${problem.id}: bulk prompt has no concrete numeric condition`);
   if (!problem.explanation.includes(problem.options[problem.answer])) errors.push(`${problem.id}: bulk explanation omits the correct option`);
 }
+const bulkByConcept = new Map();
+for (const problem of problemExpansionBulk) {
+  const stages = bulkByConcept.get(problem.primaryConceptId) ?? {};
+  stages[problem.kind] = problem;
+  bulkByConcept.set(problem.primaryConceptId, stages);
+}
+for (const [conceptId, stages] of bulkByConcept) {
+  const standardPrompt = stages.standard?.prompt?.replace(/^補強演習（[^）]+）：/u, "");
+  const transferPrompt = stages.transfer?.prompt?.replace(/^補強演習（[^）]+）：/u, "");
+  if (standardPrompt && transferPrompt && standardPrompt === transferPrompt) errors.push(`${conceptId}: transfer repeats the standard prompt`);
+}
 
 const delayedProblems = problemBank.filter((problem) => problem.id.endsWith("-delayed"));
 for (const problem of delayedProblems) {

@@ -32,6 +32,8 @@ export type PersistedProgress = {
   errorHistory?: ErrorHistory;
   examSession?: ExamSession;
   examHistory?: ExamResult[];
+  /** True when the learner explicitly chose to skip the bridge diagnostic. */
+  foundationSkipped?: boolean;
   updatedAt?: string;
   clearedAt?: string;
 };
@@ -52,6 +54,7 @@ const LOCAL_KEYS = {
   errorHistory: "kyote-math-60:error-history",
   examSession: "kyote-math-60:exam-session",
   examHistory: "kyote-math-60:exam-history",
+  foundationSkipped: "kyote-math-60:foundation-skipped",
   updatedAt: "kyote-math-60:updated-at",
   clearedAt: "kyote-math-60:cleared-at",
 } as const;
@@ -125,9 +128,10 @@ export function normalizeProgress(value: unknown, nowMs = Date.now()): Persisted
   const errorHistory = normalizeErrorHistory(value.errorHistory, safeNow);
   const examSession = normalizeExamSession(value.examSession, safeNow);
   const examHistory = normalizeExamHistory(value.examHistory, safeNow);
+  const foundationSkipped = value.foundationSkipped === true;
   const updatedAt = notFuture(value.updatedAt) ? value.updatedAt : undefined;
   const clearedAt = notFuture(value.clearedAt) ? value.clearedAt : undefined;
-  return { mastery, attempts, studyDates: [...new Set(studyDates)].slice(-180), studySeconds, awaySeconds, guideSeen, practice, errorHistory, examSession, examHistory, updatedAt, clearedAt };
+  return { mastery, attempts, studyDates: [...new Set(studyDates)].slice(-180), studySeconds, awaySeconds, guideSeen, practice, errorHistory, examSession, examHistory, foundationSkipped, updatedAt, clearedAt };
 }
 
 function readLocalProgress(): PersistedProgress | null {
@@ -143,9 +147,10 @@ function readLocalProgress(): PersistedProgress | null {
     const errorHistoryRaw = window.localStorage.getItem(LOCAL_KEYS.errorHistory);
     const examSessionRaw = window.localStorage.getItem(LOCAL_KEYS.examSession);
     const examHistoryRaw = window.localStorage.getItem(LOCAL_KEYS.examHistory);
+    const foundationSkippedRaw = window.localStorage.getItem(LOCAL_KEYS.foundationSkipped);
     const updatedAtRaw = window.localStorage.getItem(LOCAL_KEYS.updatedAt);
     const clearedAtRaw = window.localStorage.getItem(LOCAL_KEYS.clearedAt);
-    if (masteryRaw === null && attemptsRaw === null && studyDatesRaw === null && studySecondsRaw === null && awaySecondsRaw === null && guideSeenRaw === null && practiceRaw === null && errorHistoryRaw === null && examSessionRaw === null && examHistoryRaw === null && updatedAtRaw === null && clearedAtRaw === null) return null;
+    if (masteryRaw === null && attemptsRaw === null && studyDatesRaw === null && studySecondsRaw === null && awaySecondsRaw === null && guideSeenRaw === null && practiceRaw === null && errorHistoryRaw === null && examSessionRaw === null && examHistoryRaw === null && foundationSkippedRaw === null && updatedAtRaw === null && clearedAtRaw === null) return null;
     return normalizeProgress({
       mastery: parseStoredJson(masteryRaw, {}),
       attempts: parseStoredJson(attemptsRaw, {}),
@@ -157,6 +162,7 @@ function readLocalProgress(): PersistedProgress | null {
       errorHistory: parseStoredJson(errorHistoryRaw, {}),
       examSession: parseStoredJson(examSessionRaw, null),
       examHistory: parseStoredJson(examHistoryRaw, []),
+      foundationSkipped: foundationSkippedRaw === "true",
       updatedAt: updatedAtRaw ?? undefined,
       clearedAt: clearedAtRaw ?? undefined,
     });
@@ -166,7 +172,7 @@ function readLocalProgress(): PersistedProgress | null {
 }
 
 function localFallback(): PersistedProgress {
-  return readLocalProgress() ?? { mastery: {}, attempts: {}, studyDates: [], studySeconds: 0, awaySeconds: 0, guideSeen: {}, examHistory: [] };
+  return readLocalProgress() ?? { mastery: {}, attempts: {}, studyDates: [], studySeconds: 0, awaySeconds: 0, guideSeen: {}, examHistory: [], foundationSkipped: false };
 }
 
 export function mergeProgress(left: PersistedProgress, right: PersistedProgress): PersistedProgress {
@@ -219,6 +225,7 @@ export function mergeProgress(left: PersistedProgress, right: PersistedProgress)
     errorHistory: mergeErrorHistory(left.errorHistory ?? {}, right.errorHistory ?? {}),
     examSession: latest.examSession,
     examHistory: [...historyByKey.values()].sort((a, b) => a.submittedAt.localeCompare(b.submittedAt)).slice(-30),
+    foundationSkipped: latest.foundationSkipped ?? left.foundationSkipped ?? right.foundationSkipped ?? false,
     updatedAt: latest.updatedAt,
     clearedAt: latest.clearedAt,
   };
@@ -358,6 +365,8 @@ async function persistProgress(progress: PersistedProgress) {
     else window.localStorage.removeItem(LOCAL_KEYS.examSession);
     if (snapshot.examHistory && snapshot.examHistory.length > 0) window.localStorage.setItem(LOCAL_KEYS.examHistory, JSON.stringify(snapshot.examHistory));
     else window.localStorage.removeItem(LOCAL_KEYS.examHistory);
+    if (snapshot.foundationSkipped) window.localStorage.setItem(LOCAL_KEYS.foundationSkipped, "true");
+    else window.localStorage.removeItem(LOCAL_KEYS.foundationSkipped);
     window.localStorage.setItem(LOCAL_KEYS.updatedAt, snapshot.updatedAt as string);
     if (snapshot.clearedAt) window.localStorage.setItem(LOCAL_KEYS.clearedAt, snapshot.clearedAt);
     else window.localStorage.removeItem(LOCAL_KEYS.clearedAt);
@@ -393,7 +402,7 @@ async function clearSnapshot() {
   const clearedAt = new Date().toISOString();
   localClearAt = clearedAt;
   try { window.sessionStorage.setItem(RESET_SESSION_KEY, clearedAt); } catch { /* sessionStorage may be blocked */ }
-  await persistProgress({ mastery: {}, attempts: {}, studyDates: [], studySeconds: 0, awaySeconds: 0, guideSeen: {}, practice: undefined, errorHistory: {}, examSession: undefined, examHistory: [], clearedAt });
+  await persistProgress({ mastery: {}, attempts: {}, studyDates: [], studySeconds: 0, awaySeconds: 0, guideSeen: {}, practice: undefined, errorHistory: {}, examSession: undefined, examHistory: [], foundationSkipped: false, clearedAt });
 }
 
 export function clearProgress() {

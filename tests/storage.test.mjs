@@ -32,6 +32,15 @@ test("progress normalization rejects invalid clocks without poisoning merge orde
   assert.equal(mergeProgress(older, newer).mastery["I-01"], 2);
 });
 
+test("foundation-skip state survives normalization and merge", () => {
+  const past = new Date(Date.now() - 1000).toISOString();
+  const normalized = normalizeProgress({ ...empty, foundationSkipped: true, updatedAt: past });
+  assert.equal(normalized?.foundationSkipped, true);
+  const older = { ...empty, foundationSkipped: true, updatedAt: "2026-08-18T00:00:00.000Z" };
+  const newer = { ...empty, foundationSkipped: false, updatedAt: "2026-08-18T00:01:00.000Z" };
+  assert.equal(mergeProgress(older, newer).foundationSkipped, false);
+});
+
 test("progress normalization rejects future evidence and reset metadata", () => {
   const now = Date.parse("2026-08-18T12:00:00.000Z");
   const normalized = normalizeProgress({

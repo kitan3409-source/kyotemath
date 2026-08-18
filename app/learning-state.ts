@@ -141,23 +141,14 @@ export function normalizePracticeSnapshot(value: unknown): PracticeResumeState |
 }
 
 /**
- * Imported practice state must re-enter through the explanation screen.
- * A JSON file is portable data, not proof that the learner completed the
- * current lesson in this app version, so it cannot open a question or reveal
- * prior feedback immediately after import.
+ * Imported practice state keeps the learner's exact position. The snapshot is
+ * normalized against the current content bank by the page before it is used,
+ * so a portable backup can resume a lesson or question without making the
+ * learner repeat already completed screens.
  */
 export function normalizeImportedPracticeSnapshot(value: unknown): PracticeResumeState | undefined {
   const snapshot = normalizePracticeSnapshot(value);
-  if (!snapshot?.active) return snapshot;
-  return {
-    ...snapshot,
-    phase: "lesson",
-    lessonStep: "overview",
-    answer: null,
-    feedback: null,
-    errorCause: null,
-    reviewCause: null,
-  };
+  return snapshot;
 }
 
 export function normalizeErrorHistory(value: unknown, nowMs = Date.now()): ErrorHistory {
