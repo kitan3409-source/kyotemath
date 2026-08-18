@@ -24,13 +24,16 @@ const requiredSourceMarkers = [
   ["foundation skip is included in export", "foundationSkipped, curriculum: \"high_school_math_concepts.v1\""],
   ["foundation skip is restored from import", "imported.foundationSkipped === true"],
   ["first submission is recorded", "firstSubmission: !examHistory.some"],
+  ["bridge transfer does not block the next bridge concept", "prerequisite?.course === \"bridge\" && level >= 3"],
+  ["cross-tab sync suppresses a write-back loop", "skipNextSaveAfterSyncRef.current"],
 ];
 for (const [label, marker] of requiredSourceMarkers) {
   if (!page.includes(marker)) errors.push(`${label}: missing implementation marker`);
 }
 if (!examEngine.includes("explanationViewedBeforeSubmit: false")) errors.push("pre-submit explanations are blocked in evidence: missing implementation marker");
 if (!examEngine.includes("result.firstSubmission === true")) errors.push("G5 first-submission annotation is checked: missing implementation marker");
-if (!examEngine.includes("const firstG5 = G5_FORM_IDS.map")) errors.push("G5 first records survive history retention: missing implementation marker");
+if (!examEngine.includes("export function retainExamHistory")) errors.push("G5 first records survive history retention: missing implementation marker");
+if (!examEngine.includes("verifiedExamFormById")) errors.push("exam history score is recomputed from submitted answers: missing implementation marker");
 
 const requiredExamEngineMarkers = [
   ["score stores pre-submit review evidence", "explanationViewedBeforeSubmit: false"],

@@ -10,7 +10,7 @@ import {
   type PracticeResumeState,
   type RetryState,
 } from "./learning-state.ts";
-import { normalizeExamHistory, normalizeExamSession, type ExamResult, type ExamSession } from "./exam-engine.ts";
+import { normalizeExamHistory, normalizeExamSession, retainExamHistory, type ExamResult, type ExamSession } from "./exam-engine.ts";
 
 export type PersistedProgress = {
   mastery: Record<string, number>;
@@ -224,7 +224,7 @@ export function mergeProgress(left: PersistedProgress, right: PersistedProgress)
     practice: latest.practice,
     errorHistory: mergeErrorHistory(left.errorHistory ?? {}, right.errorHistory ?? {}),
     examSession: latest.examSession,
-    examHistory: [...historyByKey.values()].sort((a, b) => a.submittedAt.localeCompare(b.submittedAt)).slice(-30),
+    examHistory: retainExamHistory([...historyByKey.values()]),
     foundationSkipped: latest.foundationSkipped ?? left.foundationSkipped ?? right.foundationSkipped ?? false,
     updatedAt: latest.updatedAt,
     clearedAt: latest.clearedAt,

@@ -19,6 +19,29 @@ import { lessonModulesBatch05b } from "./lesson-modules-batch-05b.ts";
 type Concept = (typeof conceptData.concepts)[number];
 type Kind = Problem["kind"];
 const kinds: Kind[] = ["quick", "standard", "transfer"];
+const transferVariations = [
+  "与えられた数値を別の値に置き換えた場合",
+  "求める量を途中の量へ入れ替えた場合",
+  "単位を変えて記録した場合",
+  "条件を一つ追加した場合",
+  "図や表の並びを変えた場合",
+];
+
+function alteredCondition(text: string, seed: number) {
+  const shift = Math.abs(seed) % 3 + 1;
+  let changed = false;
+  const altered = text.replace(/(?<![A-Za-z])\d+(?:\.\d+)?/g, (value) => {
+    changed = true;
+    return String(Number(value) + shift);
+  });
+  return changed ? altered : `別条件：既知量x=${shift + 1}、未知量yを条件から決める`;
+}
+
+function concretePrompt(prompt: string, seed: number) {
+  if (/[0-9０-９=＜＞≤≥≠+−\-*/^√∩∪]/u.test(prompt)) return prompt;
+  const x = Math.abs(seed) % 5 + 2;
+  return `${prompt} 条件例：既知量x=${x}、y=${x + 3}を条件に応じて読む。`;
+}
 const targetConcepts = conceptData.concepts.filter(
   (concept) => ["I", "A", "II", "B", "C"].includes(concept.course) && concept.priority === "core",
 );
@@ -48,10 +71,11 @@ function choose(correct: string, distractors: string[], seed: number) {
 function lessonExercise(lesson: LessonModule, kind: Kind): ScopeExercise {
   if (kind === "quick") return { prompt: lesson.quickCheck.problem, answer: lesson.quickCheck.answer, explanation: lesson.quickCheck.explanation, distractors: [] };
   if (kind === "standard") return { prompt: lesson.workedExample.problem, answer: lesson.workedExample.answer, explanation: lesson.workedExample.steps.join(" "), distractors: [] };
+  const variation = transferVariations[Array.from(lesson.conceptId).reduce((sum, character) => sum + character.charCodeAt(0), 0) % transferVariations.length];
   return {
-    prompt: `転移問題（例題とは別の表現）：${lesson.quickCheck.problem}`,
-    answer: lesson.quickCheck.answer,
-    explanation: `${lesson.quickCheck.explanation} 例題と表現が変わっても、条件から必要な量を決めて答えの意味を確認する。`,
+    prompt: `別条件への転移：「${lesson.title}」を使う。${alteredCondition(lesson.quickCheck.problem, variation.length)}。${variation}、最初に注目するサインは？`,
+    answer: lesson.examSignal,
+    explanation: `${lesson.examSignal}。例題の数値を暗記せず、条件から使う道具を選ぶ。`,
     distractors: [],
   };
 }
@@ -88,7 +112,7 @@ function makeProblem(concept: Concept, index: number, kind: Kind, variant: numbe
     conceptIds: [concept.id],
     primaryConceptId: concept.id,
     title: `${concept.title}｜補強${kind}`,
-    prompt: `補強演習（${concept.id}）：${exercise.prompt}`,
+    prompt: `補強演習（${concept.id}）：${concretePrompt(exercise.prompt, index + variant)}`,
     options: choice.options,
     answer: choice.answer,
     explanation: `正答は「${exercise.answer}」。${exercise.explanation} ${concept.title}では、問題文の条件と答えの意味を最後に照合する。`,

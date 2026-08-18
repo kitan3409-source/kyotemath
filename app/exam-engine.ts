@@ -1,4 +1,5 @@
 import type { Problem } from "./problem-bank";
+import { problemBank } from "./problem-bank.ts";
 import { isValidIsoDate } from "./learning-state.ts";
 
 export type ExamPaper = "math1a" | "math2bc" | "math3";
@@ -77,6 +78,8 @@ export type ExamResult = {
   explanationViewedBeforeSubmit?: boolean;
   /** Set by the UI when this is the learner's first submission of the form. */
   firstSubmission?: boolean;
+  /** The answers actually submitted, used to recompute imported results. */
+  submittedAnswers?: Record<string, number>;
   questionResults: Record<string, "correct" | "wrong" | "unanswered">;
   bySection: Record<string, { score: number; points: number; unanswered: number }>;
 };
@@ -114,6 +117,19 @@ type SectionTemplate = {
   matches: (problem: Problem) => boolean;
 };
 
+function conceptNumber(id: string, prefix: string) {
+  if (!id.startsWith(prefix)) return Number.NaN;
+  const value = Number(id.slice(prefix.length));
+  return Number.isInteger(value) ? value : Number.NaN;
+}
+
+function hasConceptNumber(problem: Problem, prefix: string, minimum: number, maximum: number) {
+  return problem.conceptIds.some((id) => {
+    const value = conceptNumber(id, prefix);
+    return Number.isInteger(value) && value >= minimum && value <= maximum;
+  });
+}
+
 const iaTemplates: SectionTemplate[] = [
   {
     id: "IA-01",
@@ -137,7 +153,9 @@ const iaTemplates: SectionTemplate[] = [
     count: 5,
     instruction: "図の条件を辺・角・比へ置き換え、必要な関係だけを選ぶ。",
     context: "図形の一部を測り、相似・三角比・円の性質を順に使って量を決める。",
-    matches: (problem) => problem.conceptIds.some((id) => id.startsWith("A-") || id.startsWith("I-")) && /(図形|三角|円|相似|角)/.test(problem.title + problem.prompt),
+    matches: (problem) => hasConceptNumber(problem, "I-", 35, 41)
+      || hasConceptNumber(problem, "A-", 19, 35)
+      || hasConceptNumber(problem, "A-", 37, 38),
   },
   {
     id: "IA-03",
@@ -148,7 +166,7 @@ const iaTemplates: SectionTemplate[] = [
     instruction: "標本空間を先に固定し、条件付きの分母・分子を同じ単位で数える。",
     context: "複数の選択や試行を表・樹形図で整理し、確率を段階的に更新する。",
     contextTable: { columns: ["状態", "確率", "条件"], rows: [["A", "未定", "最初の選択"], ["B", "未定", "情報を得た後"], ["C", "未定", "最終結果"]] },
-    matches: (problem) => problem.conceptIds.some((id) => id.startsWith("A-")) && /(確率|場合|期待|組合せ|順列)/.test(problem.title + problem.prompt),
+    matches: (problem) => hasConceptNumber(problem, "A-", 1, 18),
   },
   {
     id: "IA-04",
@@ -159,7 +177,7 @@ const iaTemplates: SectionTemplate[] = [
     instruction: "代表値だけで結論を出さず、散らばり・相関・尺度を合わせて読む。",
     context: "同じデータを表・散布図・標準化した値で見比べ、解釈の妥当性を判断する。",
     contextTable: { columns: ["集団", "平均", "標準偏差"], rows: [["P", "60", "8"], ["Q", "72", "12"], ["R", "55", "5"]] },
-    matches: (problem) => problem.conceptIds.some((id) => id.startsWith("I-")) && /(平均|中央値|標準|相関|データ|分散|散布)/.test(problem.title + problem.prompt),
+    matches: (problem) => hasConceptNumber(problem, "I-", 43, 52),
   },
 ];
 
@@ -172,6 +190,9 @@ const iIbcTemplates: SectionTemplate[] = [
     count: 4,
     instruction: "式・グラフ・変化率を行き来し、設問の誘導を一つずつ確定する。",
     context: "ある現象の量を関数で表し、グラフの特徴と変化量を連続して考える。",
+    // Keep the required Math II section broad enough for small test banks;
+    // optional sections below carry the explicit sequence/statistics/vector/
+    // complex-number boundaries.
     matches: (problem) => problem.conceptIds.some((id) => id.startsWith("II-")),
   },
   {
@@ -182,7 +203,7 @@ const iIbcTemplates: SectionTemplate[] = [
     count: 2,
     instruction: "初項・漸化式・一般項・和を同じ数列の情報として結び付ける。",
     context: "毎回の更新規則から数列を作り、将来値や累積量を求める。",
-    matches: (problem) => problem.conceptIds.some((id) => id.startsWith("B-")) && /(数列|漸化|等差|等比|和)/.test(problem.title + problem.prompt),
+    matches: (problem) => hasConceptNumber(problem, "B-", 1, 13),
   },
   {
     id: "IIBC-03",
@@ -193,7 +214,7 @@ const iIbcTemplates: SectionTemplate[] = [
     instruction: "標本の情報と母集団の不確実性を分け、推定・検定の結論を条件付きで述べる。",
     context: "標本から母比率や母平均を考え、誤差を含む判断を表と式で説明する。",
     contextTable: { columns: ["標本", "成功数", "標本数"], rows: [["S1", "42", "80"], ["S2", "54", "100"], ["S3", "63", "120"]] },
-    matches: (problem) => problem.conceptIds.some((id) => id.startsWith("B-")) && /(統計|推定|検定|標本|母|信頼)/.test(problem.title + problem.prompt),
+    matches: (problem) => hasConceptNumber(problem, "B-", 14, 32),
   },
   {
     id: "IIBC-04",
@@ -203,7 +224,7 @@ const iIbcTemplates: SectionTemplate[] = [
     count: 2,
     instruction: "図形の位置関係をベクトルの係数・内積・成分で一貫して表す。",
     context: "平面上の点をベクトルで表し、内分・垂直・面積の条件を連鎖させる。",
-    matches: (problem) => problem.conceptIds.some((id) => id.startsWith("C-")) && /(ベクトル|内積|成分|位置)/.test(problem.title + problem.prompt),
+    matches: (problem) => hasConceptNumber(problem, "C-", 1, 20),
   },
   {
     id: "IIBC-05",
@@ -213,7 +234,7 @@ const iIbcTemplates: SectionTemplate[] = [
     count: 2,
     instruction: "複素数を点・回転・拡大縮小として読み替え、式と図形を往復する。",
     context: "複素数平面上の点の移動を、極形式・軌跡・距離で解釈する。",
-    matches: (problem) => problem.conceptIds.some((id) => id.startsWith("C-")) && /(複素|曲線|極|軌跡)/.test(problem.title + problem.prompt),
+    matches: (problem) => hasConceptNumber(problem, "C-", 21, 40),
   },
 ];
 
@@ -271,10 +292,19 @@ function takeSources(bank: Problem[], template: SectionTemplate, used: Set<strin
   return selected;
 }
 
-function linkedOptions(correct: number, seed: number, answerPosition?: number) {
-  const position = answerPosition === undefined
-    ? ((seed % 4) + 4) % 4
-    : ((answerPosition % 4) + 4) % 4;
+function stableSeed(value: string) {
+  let hash = 0x811c9dc5;
+  for (const character of value) hash = Math.imul(hash ^ character.charCodeAt(0), 0x01000193);
+  return hash | 0;
+}
+
+function linkedOptions(correct: number, seed: number) {
+  // Never copy the previous choice position into the next answer position:
+  // doing that makes repeated A/B/C/D guesses a scoring strategy. The layout
+  // stays deterministic for reloads, but is derived from this question only.
+  let mixed = Math.imul((seed + 0x9e3779b9) | 0, 0x45d9f3b);
+  mixed = Math.imul((mixed ^ (mixed >>> 16)) | 0, 0x45d9f3b);
+  const position = ((mixed ^ (mixed >>> 16)) >>> 0) % 4;
   // Keep the distractor range tied to the previous input. A changed input
   // must alter the visible option list even when the derived correct value
   // happens to land in the same small integer set.
@@ -306,7 +336,7 @@ function materializeSectionQuestions(section: ExamSection, answers: Record<strin
       ? base.linkedAnswerValue - base.linkedSourceAnswer
       : answerValue(previous, previousAnswer);
     const linkedAnswerValue = previousValue + base.linkedSourceAnswer;
-    const linked = linkedOptions(linkedAnswerValue, index, previousAnswer ?? previous.answer);
+    const linked = linkedOptions(linkedAnswerValue, stableSeed(base.id));
     const choices = base.sourceMaterial.options.map((option, optionIndex) => `${String.fromCharCode(65 + optionIndex)}: ${option}`).join(" / ");
     const kText = previousAnswer === undefined ? "前問で確定する値 k" : `前問で選んだ値 k=${previousValue}`;
     questions.push({
@@ -354,7 +384,7 @@ function makeSection(template: SectionTemplate, formId: string, sources: Problem
     }
     const linkedAnswerValue = previous.linkedAnswerValue + source.answer;
     const choices = source.options.map((option, optionIndex) => `${String.fromCharCode(65 + optionIndex)}: ${option}`).join(" / ");
-    const linked = linkedOptions(linkedAnswerValue, index, previous.answer);
+    const linked = linkedOptions(linkedAnswerValue, stableSeed(id));
     questions.push({
       id,
       sourceProblemId: source.id,
@@ -422,6 +452,7 @@ export function scoreExam(form: ExamForm, answers: Record<string, number>, selec
   const bySection: ExamResult["bySection"] = {};
   const unanswered: string[] = [];
   const questionResults: ExamResult["questionResults"] = {};
+  const submittedAnswers: Record<string, number> = {};
   let score = 0;
   for (const section of form.sections) {
     if (!selectedSections.has(section.id)) continue;
@@ -435,9 +466,11 @@ export function scoreExam(form: ExamForm, answers: Record<string, number>, selec
         questionResults[question.id] = "unanswered";
         sectionUnanswered += 1;
       } else if (answer === question.answer) {
+        submittedAnswers[question.id] = answer;
         questionResults[question.id] = "correct";
         sectionScore += question.points;
       } else {
+        submittedAnswers[question.id] = answer;
         questionResults[question.id] = "wrong";
       }
     }
@@ -447,7 +480,7 @@ export function scoreExam(form: ExamForm, answers: Record<string, number>, selec
   const started = Date.parse(startedAt);
   const submitted = Date.parse(submittedAt);
   const elapsedSeconds = Number.isFinite(started) && Number.isFinite(submitted) ? Math.max(0, Math.round((submitted - started) / 1000)) : 0;
-  return { formId: form.id, paper: form.paper, score, totalPoints: form.totalPoints, percentage: Math.round((score / form.totalPoints) * 100), selectedOptionalSectionIds: eligibleSectionIds(form, selectedOptionalSectionIds).filter((id) => form.optionalSectionIds.includes(id)), startedAt, submittedAt, unanswered, elapsedSeconds, timedOut, explanationViewedBeforeSubmit: false, questionResults, bySection };
+  return { formId: form.id, paper: form.paper, score, totalPoints: form.totalPoints, percentage: Math.round((score / form.totalPoints) * 100), selectedOptionalSectionIds: eligibleSectionIds(form, selectedOptionalSectionIds).filter((id) => form.optionalSectionIds.includes(id)), startedAt, submittedAt, unanswered, elapsedSeconds, timedOut, explanationViewedBeforeSubmit: false, submittedAnswers, questionResults, bySection };
 }
 
 export function createExamSession(form: ExamForm, now = new Date(), selectedOptionalSectionIds = form.optionalSectionIds.slice(0, 3)): ExamSession {
@@ -507,10 +540,12 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
   const now = Number.isFinite(nowMs) ? nowMs : Date.now();
   const normalized = value.filter((entry): entry is ExamResult => {
     if (!isRecord(entry) || typeof entry.formId !== "string" || (entry.paper !== "math1a" && entry.paper !== "math2bc" && entry.paper !== "math3")) return false;
-    const allowedKeys = new Set(["formId", "paper", "score", "totalPoints", "percentage", "selectedOptionalSectionIds", "startedAt", "submittedAt", "unanswered", "elapsedSeconds", "timedOut", "explanationViewedBeforeSubmit", "firstSubmission", "questionResults", "bySection"]);
+    const allowedKeys = new Set(["formId", "paper", "score", "totalPoints", "percentage", "selectedOptionalSectionIds", "startedAt", "submittedAt", "unanswered", "elapsedSeconds", "timedOut", "explanationViewedBeforeSubmit", "firstSubmission", "submittedAnswers", "questionResults", "bySection"]);
     if (Object.keys(entry).some((key) => !allowedKeys.has(key))) return false;
-    const startedAt = isValidIsoDate(entry.startedAt) ? Date.parse(entry.startedAt) : Number.NaN;
-    const submittedAt = isValidIsoDate(entry.submittedAt) ? Date.parse(entry.submittedAt) : Number.NaN;
+    const startedAtText = typeof entry.startedAt === "string" ? entry.startedAt : "";
+    const submittedAtText = typeof entry.submittedAt === "string" ? entry.submittedAt : "";
+    const startedAt = isValidIsoDate(startedAtText) ? Date.parse(startedAtText) : Number.NaN;
+    const submittedAt = isValidIsoDate(submittedAtText) ? Date.parse(submittedAtText) : Number.NaN;
     const formIdPattern = entry.paper === "math1a" ? /^IA-F[1-3]$/ : entry.paper === "math2bc" ? /^IIBC-F[1-3]$/ : /^MATH3-F[1-3]$/;
     const sectionPattern = entry.paper === "math1a" ? /^IA-0[1-4]$/ : entry.paper === "math2bc" ? /^IIBC-0[1-5]$/ : /^M3-0[1-4]$/;
     const selected = Array.isArray(entry.selectedOptionalSectionIds) ? entry.selectedOptionalSectionIds : [];
@@ -546,6 +581,17 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
       ? Object.fromEntries(expectedSectionIds.map((id) => [id, id === "IIBC-01" ? 40 : 20]))
       : Object.fromEntries(expectedSectionIds.map((id) => [id, 25]));
     const expectedQuestionIds = expectedSectionIds.flatMap((sectionId) => Array.from({ length: sectionCounts[sectionId] }, (_, index) => `${entry.formId}-${sectionId}-${String(index + 1).padStart(2, "0")}`));
+    const submittedAnswers = (() => {
+      if (!Object.prototype.hasOwnProperty.call(entry, "submittedAnswers")) return undefined;
+      if (!isRecord(entry.submittedAnswers)) return null;
+      const answers: Record<string, number> = {};
+      for (const [id, answer] of Object.entries(entry.submittedAnswers)) {
+        if (!expectedQuestionIds.includes(id) || typeof answer !== "number" || !Number.isSafeInteger(answer) || answer < 0 || answer > 3) return null;
+        answers[id] = answer;
+      }
+      return answers;
+    })();
+    if (submittedAnswers === null) return false;
     const validQuestionId = (id: unknown) => {
       if (typeof id !== "string" || !id.startsWith(`${entry.formId}-`)) return false;
       const suffix = id.slice(`${entry.formId}-`.length);
@@ -640,16 +686,40 @@ export function normalizeExamHistory(value: unknown, nowMs = Date.now()): ExamRe
       sectionScore += sectionMark;
       sectionUnanswered += unanswered;
     }
+    if (submittedAnswers !== undefined) {
+      const verifiedForm = verifiedExamFormById().get(entry.formId);
+      if (!verifiedForm) return false;
+      const recomputed = scoreExam(verifiedForm, submittedAnswers, selectedIds, startedAtText, submittedAtText, entry.timedOut);
+      if (recomputed.score !== score
+        || recomputed.percentage !== percentage
+        || recomputed.elapsedSeconds !== elapsedSeconds
+        || recomputed.timedOut !== entry.timedOut
+        || JSON.stringify(recomputed.unanswered) !== JSON.stringify(entry.unanswered)
+        || JSON.stringify(recomputed.questionResults) !== JSON.stringify(entry.questionResults)
+        || JSON.stringify(recomputed.bySection) !== JSON.stringify(entry.bySection)) return false;
+    }
     return Object.keys(entry.bySection).length > 0
       && sectionPoints === totalPoints
       && sectionScore === score
       && sectionUnanswered === entry.unanswered.length;
   });
-  const firstG5 = G5_FORM_IDS.map((formId) => normalized
-    .filter((entry) => entry.formId === formId)
-    .sort((left, right) => left.submittedAt.localeCompare(right.submittedAt))[0]);
-  const retained = [...firstG5, ...normalized.slice(-30)].filter((entry): entry is ExamResult => Boolean(entry));
-  return retained.filter((entry, index, all) => index === all.findIndex((candidate) => candidate.formId === entry.formId && candidate.submittedAt === entry.submittedAt));
+  return retainExamHistory(normalized);
+}
+
+let verifiedForms: Map<string, ExamForm> | undefined;
+function verifiedExamFormById() {
+  verifiedForms ??= new Map(buildExamForms(problemBank).map((form) => [form.id, form]));
+  return verifiedForms;
+}
+
+/** Preserve the first G5 attempt even when ordinary history is capped. */
+export function retainExamHistory(history: ExamResult[]) {
+  const deduplicated = [...new Map(history.map((entry) => [`${entry.formId}:${entry.submittedAt}`, entry] as const)).values()]
+    .sort((left, right) => left.submittedAt.localeCompare(right.submittedAt));
+  const firstG5 = G5_FORM_IDS.map((formId) => deduplicated.find((entry) => entry.formId === formId));
+  return [...firstG5, ...deduplicated.slice(-30)]
+    .filter((entry): entry is ExamResult => Boolean(entry))
+    .filter((entry, index, all) => index === all.findIndex((candidate) => candidate.formId === entry.formId && candidate.submittedAt === entry.submittedAt));
 }
 
 /**
@@ -667,6 +737,7 @@ export function summarizeG5Evidence(history: ExamResult[]): G5EvidenceSummary {
     if (!first) return { formId, status: "missing", reasons: ["初回提出の記録がありません。"] };
     const reasons: string[] = [];
     const flaggedFirst = formResults.filter((result) => result.firstSubmission === true);
+    if (first.firstSubmission !== true) reasons.push("初回提出フラグがありません。");
     if (flaggedFirst.length > 0 && (flaggedFirst.length !== 1 || flaggedFirst[0].submittedAt !== first.submittedAt)) {
       reasons.push("初回提出フラグと提出時刻が一致しません。");
     }
@@ -679,6 +750,7 @@ export function summarizeG5Evidence(history: ExamResult[]): G5EvidenceSummary {
     if (first.elapsedSeconds > limit) reasons.push("制限時間を超えています。");
     if (first.explanationViewedBeforeSubmit === undefined) reasons.push("提出前の解説非閲覧記録がありません。");
     else if (first.explanationViewedBeforeSubmit) reasons.push("提出前に解説を見た記録があります。");
+    if (first.submittedAnswers === undefined) reasons.push("提出答案の再計算記録がありません。");
     return { formId, result: first, status: reasons.length === 0 ? "passed" : "failed", reasons };
   });
   const passedCount = rows.filter((row) => row.status === "passed").length;
