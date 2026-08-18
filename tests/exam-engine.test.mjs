@@ -195,4 +195,5 @@ test("G5 evidence uses the first submission for each IA and IIBC form", () => {
   assert.match(missingReviewEvidence.rows[0].reasons.join(" "), /解説非閲覧記録/);
   const viewedBeforeSubmit = summarizeG5Evidence(valid.map((result) => ({ ...result, explanationViewedBeforeSubmit: true })));
   assert.equal(viewedBeforeSubmit.allConditionsMet, false);
+  assert.match(viewedBeforeSubmit.rows[0].reasons.join(" "), /提出前に解説を見た記録/);
 });

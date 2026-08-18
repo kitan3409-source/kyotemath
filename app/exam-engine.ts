@@ -661,7 +661,8 @@ export function summarizeG5Evidence(history: ExamResult[]): G5EvidenceSummary {
     if (first.score < 60) reasons.push("60点未満です。");
     if (first.timedOut) reasons.push("時間切れです。");
     if (first.elapsedSeconds > limit) reasons.push("制限時間を超えています。");
-    if (first.explanationViewedBeforeSubmit !== false) reasons.push("提出前の解説非閲覧記録がありません。");
+    if (first.explanationViewedBeforeSubmit === undefined) reasons.push("提出前の解説非閲覧記録がありません。");
+    else if (first.explanationViewedBeforeSubmit) reasons.push("提出前に解説を見た記録があります。");
     return { formId, result: first, status: reasons.length === 0 ? "passed" : "failed", reasons };
   });
   const passedCount = rows.filter((row) => row.status === "passed").length;
