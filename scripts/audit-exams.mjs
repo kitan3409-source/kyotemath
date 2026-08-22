@@ -46,13 +46,34 @@ for (const { paper, durationSeconds } of [{ paper: "math1a", durationSeconds: 42
             const alternative = { ...correctAnswers, [previousId]: alternativeAnswer };
             const mutated = examQuestions(form, form.optionalSectionIds.slice(0, 3), alternative).find((candidate) => candidate.id === question.id);
             if (!mutated || !baseline || mutated.linkedAnswerValue === baseline.linkedAnswerValue) errors.push(`${form.id}/${question.id}/choice${alternativeAnswer}: actual previous input does not change the follow-up`);
-            if (!mutated || !baseline || mutated.answer === baseline.answer) errors.push(`${form.id}/${question.id}/choice${alternativeAnswer}: actual previous input does not change the follow-up answer position`);
             if (!mutated || !baseline || JSON.stringify(mutated.options) === JSON.stringify(baseline.options)) errors.push(`${form.id}/${question.id}/choice${alternativeAnswer}: actual previous input does not change the follow-up options`);
             if (!mutated || !baseline || mutated.prompt === baseline.prompt || mutated.explanation === baseline.explanation) errors.push(`${form.id}/${question.id}/choice${alternativeAnswer}: actual previous input does not change visible follow-up text`);
           }
         }
       }
     }
+  }
+}
+
+function optionalCombinations(ids) {
+  if (ids.length <= 3) return [ids.slice(0, 3)];
+  const combinations = [];
+  for (let omitted = 0; omitted < ids.length; omitted += 1) combinations.push(ids.filter((_, index) => index !== omitted));
+  return combinations;
+}
+
+// A learner must not be able to clear the G5 threshold by repeating one
+// option position. Linked option placement is intentionally independent of
+// the previous answer; this red-team gate checks all four constant-position
+// strategies against every official form and every IIBC section combination.
+for (const form of forms.filter((candidate) => candidate.paper !== "math3")) {
+  for (const selected of optionalCombinations(form.optionalSectionIds)) {
+    const questions = examQuestions(form, selected);
+    const fixedChoiceScores = [0, 1, 2, 3].map((choice) => {
+      const answers = Object.fromEntries(questions.map((question) => [question.id, choice]));
+      return exam.scoreExam(form, answers, selected, "2026-08-18T00:00:00.000Z", "2026-08-18T00:30:00.000Z", false).score;
+    });
+    if (Math.max(...fixedChoiceScores) >= 60) errors.push(`${form.id}/${selected.join(",")}: fixed option-position strategy reaches ${Math.max(...fixedChoiceScores)} points`);
   }
 }
 const iibc = forms.find((form) => form.paper === "math2bc");

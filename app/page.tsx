@@ -41,6 +41,7 @@ import {
   normalizeExamSession,
   scoreExam,
   createExamSession,
+  retainExamHistory,
   summarizeG5Evidence,
   type ExamForm,
   type ExamResult,
@@ -158,7 +159,10 @@ function sanitizePracticeResume(
   const concept = conceptById.get(practice.conceptId);
   const prerequisitesReady = concept?.requires.every((id) => {
     const prerequisite = conceptById.get(id);
-    return (allowFoundationSkip && prerequisite?.course === "bridge") || isMasteryComplete(sourceMastery[id]);
+    const level = sourceMastery[id] ?? 0;
+    return (allowFoundationSkip && prerequisite?.course === "bridge")
+      || isMasteryComplete(level)
+      || (prerequisite?.course === "bridge" && level >= 3);
   });
   if (!concept || !prerequisitesReady) return undefined;
   const level = sourceMastery[practice.conceptId] ?? 0;
@@ -419,6 +423,8 @@ export default function Home() {
   const [sessionEvidence, setSessionEvidence] = useState<SessionEvidence | null>(null);
   const [sessionStartAttempts, setSessionStartAttempts] = useState(0);
   const [sessionStartRoute, setSessionStartRoute] = useState(0);
+  const skipNextSaveAfterSyncRef = useRef(false);
+  const syncTimerRef = useRef<number | null>(null);
   const audioRef = useRef<{ context: AudioContext; node: ScriptProcessorNode } | null>(null);
   const studySessionRef = useRef<StoredStudySession | null>(null);
   const focusAutoStopRef = useRef<string | null>(null);
@@ -456,6 +462,7 @@ export default function Home() {
         const legacyFocus = safeParse<{ totalSeconds?: number; startedAt?: number } | null>(readStored(storageKeys.focus), null);
         const hasPersistedProgress = Object.keys(progress.attempts).length > 0
           || progress.studyDates.length > 0
+          || Object.keys(progress.guideSeen).length > 0
           || (progress.examHistory?.length ?? 0) > 0
           || Boolean(progress.examSession?.active)
           || Boolean(progress.practice?.active)
@@ -553,7 +560,17 @@ export default function Home() {
   useEffect(() => {
     if (!hydrated) return;
     const syncFromAnotherTab = () => {
-      void loadProgress().then((progress) => {
+      // persistProgress writes several localStorage keys. Coalesce their
+      // storage events into one snapshot read so a single remote save cannot
+      // consume the one-shot save guard multiple times.
+      if (syncTimerRef.current !== null) return;
+      syncTimerRef.current = window.setTimeout(() => {
+        syncTimerRef.current = null;
+        // The received snapshot is already persisted by the other tab. Do not
+        // immediately write it back with a fresh updatedAt and create a
+        // storage-event ping-pong loop.
+        skipNextSaveAfterSyncRef.current = true;
+        void loadProgress().then((progress) => {
         const syncedMastery = masteryFromAttempts(progress.attempts);
         setMastery(syncedMastery);
         setAttempts(progress.attempts);
@@ -594,14 +611,25 @@ export default function Home() {
           setPracticeErrorCause(null);
           setPracticeReviewCause(null);
         }
-      });
+        });
+      }, 50);
     };
     window.addEventListener("storage", syncFromAnotherTab);
-    return () => window.removeEventListener("storage", syncFromAnotherTab);
+    return () => {
+      window.removeEventListener("storage", syncFromAnotherTab);
+      if (syncTimerRef.current !== null) {
+        window.clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
+    };
   }, [hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
+    if (skipNextSaveAfterSyncRef.current) {
+      skipNextSaveAfterSyncRef.current = false;
+      return;
+    }
     const practice = practiceResumeActive
       ? { active: true, conceptId: selectedConceptId, problemId: practiceProblemId, phase: practicePhase, lessonStep, answer: practiceAnswer, feedback: practiceFeedback, errorCause: practiceErrorCause, reviewCause: practiceReviewCause }
       : undefined;
@@ -682,7 +710,7 @@ export default function Home() {
       const result = { ...scoreExam(form, examSession.answers, examSession.selectedOptionalSectionIds, examSession.startedAt, submittedAt, true), firstSubmission: !examHistory.some((entry) => entry.formId === examSession.formId) };
       setExamHistory((previous) => previous.some((entry) => entry.formId === result.formId && entry.startedAt === result.startedAt)
         ? previous
-        : [...previous, result].slice(-30));
+        : retainExamHistory([...previous, result]));
       setExamSession((previous) => previous?.active && previous.startedAt === examSession.startedAt
         ? { ...previous, active: false, finished: true, submittedAt }
         : previous);
@@ -751,7 +779,14 @@ export default function Home() {
     : routeConcepts;
   const isRouteTouched = (concept: Concept) => (mastery[concept.id] ?? 0) > 0 || Boolean(guideSeen[concept.id]) || Boolean(attempts[concept.id]);
   const isRouteComplete = (concept: Concept) => isMasteryComplete(mastery[concept.id]);
-  const isPrerequisiteReady = (id: string) => isMasteryComplete(mastery[id]);
+  const isPrerequisiteReady = (id: string) => {
+    const prerequisite = conceptById.get(id);
+    const level = mastery[id] ?? 0;
+    // The bridge diagnostic may advance to the next bridge concept after the
+    // transfer check. Its delayed retest remains scheduled and is still shown
+    // later; it must not block the learner's first usable route.
+    return isMasteryComplete(level) || (prerequisite?.course === "bridge" && level >= 3);
+  };
   const isUnlocked = (concept: Concept) => concept.requires.every((id) => {
     const prerequisite = conceptById.get(id);
     const bridgeBypass = foundationSkipped && prerequisite?.course === "bridge";
@@ -1044,6 +1079,7 @@ export default function Home() {
   function markGuideRead(concept: Concept) {
     if (!conceptGuides[concept.id] && !lessonByConcept.has(concept.id)) return;
     setGuideSeen((previous) => previous[concept.id] ? previous : { ...previous, [concept.id]: true });
+    writeStored(storageKeys.initialized, "true");
     recordStudyDay();
   }
 
@@ -1190,7 +1226,7 @@ export default function Home() {
     const result = { ...scoreExam(form, session.answers, session.selectedOptionalSectionIds, session.startedAt, submittedAt, isTimedOut), firstSubmission: !examHistory.some((entry) => entry.formId === session.formId) };
     setExamHistory((previous) => previous.some((entry) => entry.formId === result.formId && entry.startedAt === result.startedAt)
       ? previous
-      : [...previous, result].slice(-30));
+      : retainExamHistory([...previous, result]));
     setExamSession((previous) => previous?.active && previous.startedAt === session.startedAt
       ? { ...previous, active: false, finished: true, submittedAt }
       : previous);

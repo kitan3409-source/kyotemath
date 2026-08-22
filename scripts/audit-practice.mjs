@@ -24,7 +24,7 @@ for (const concept of concepts) {
     row.push(problem.id);
     if (problem.kind !== kind) errors.push(`${concept.id}/${kind}: selected ${problem.id} is ${problem.kind}`);
     if (kind === "quick") quickPrompt = problem.prompt;
-    if (kind === "transfer" && quickPrompt && problem.prompt.replace(/^転移練習：/u, "") === quickPrompt) errors.push(`${concept.id}/transfer: transfer prompt repeats quick prompt`);
+    if (kind === "transfer" && quickPrompt && (problem.prompt.replace(/^転移練習：/u, "") === quickPrompt || problem.prompt.includes(quickPrompt))) errors.push(`${concept.id}/transfer: transfer prompt repeats or embeds quick prompt`);
     if (!problem.conceptIds.includes(concept.id)) errors.push(`${concept.id}/${kind}: selected problem is not tagged to concept`);
     if (problem.options.length !== 4 || new Set(problem.options).size !== 4) errors.push(`${concept.id}/${kind}: expected four unique options`);
     if (!Number.isSafeInteger(problem.answer) || problem.answer < 0 || problem.answer >= problem.options.length) errors.push(`${concept.id}/${kind}: invalid answer index`);

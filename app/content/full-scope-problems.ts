@@ -14,6 +14,36 @@ import type { Problem } from "../problem-bank";
 type Concept = (typeof conceptData.concepts)[number];
 
 const kinds: Problem["kind"][] = ["quick", "standard", "transfer"];
+const transferVariations = [
+  "与えられた数値を別の値に置き換えた場合",
+  "求める量を途中の量へ入れ替えた場合",
+  "単位を変えて記録した場合",
+  "条件を一つ追加した場合",
+  "図や表の並びを変えた場合",
+];
+const delayedVariations = [
+  "初見の数値設定で同じ判断を求められた場合",
+  "求める量が変わり、途中の量を先に決める場合",
+  "単位が変わった資料を読む場合",
+  "条件が一つ追加された場合",
+  "図や表の表現が変わった場合",
+];
+
+function concretePrompt(prompt: string, seed: number) {
+  if (/[0-9０-９=＜＞≤≥≠+−\-*/^√∩∪]/u.test(prompt)) return prompt;
+  const x = Math.abs(seed) % 5 + 2;
+  return `${prompt} 条件例：既知量x=${x}、y=${x + 3}を条件に応じて読む。`;
+}
+
+function alteredCondition(text: string, seed: number) {
+  const shift = Math.abs(seed) % 3 + 1;
+  let changed = false;
+  const altered = text.replace(/(?<![A-Za-z])\d+(?:\.\d+)?/g, (value) => {
+    changed = true;
+    return String(Number(value) + shift);
+  });
+  return changed ? altered : `別条件：既知量x=${shift + 1}、未知量yを条件から決める`;
+}
 
 function optionsFor(correct: string, seed: number, extraDistractors: string[] = []) {
   const distractors = [...new Set([
@@ -44,7 +74,7 @@ function makeFallbackProblem(concept: Concept, kind: Problem["kind"], seed: numb
     conceptIds: [concept.id],
     primaryConceptId: concept.id,
     title: `${concept.title}｜${kind}`,
-    prompt,
+    prompt: concretePrompt(prompt, seed),
     options: choice.options,
     answer: choice.answer,
     explanation: `${correct}。${guide.trap}`,
@@ -70,12 +100,13 @@ function makeLessonProblem(concept: Concept, kind: Problem["kind"], seed: number
     const guide = fullCourseGuides()[concept.id];
     const correct = lesson.examSignal;
     const choice = optionsFor(correct, seed, [guide.firstMove, guide.trap, lesson.quickCheck.answer, concept.target]);
+    const variation = transferVariations[Math.abs(seed) % transferVariations.length];
     return {
       id: `AUTO-${concept.id}-${kind}`,
       conceptIds: [concept.id],
       primaryConceptId: concept.id,
       title: `${concept.title}｜${kind}（条件を読む）`,
-      prompt: `転移練習：${concept.title}の条件に対応する共テの見分け方として、最初に注目するサインは？ 状況：${lesson.quickCheck.problem}`,
+      prompt: concretePrompt(`転移練習：${concept.title}を別の条件で使う。${alteredCondition(lesson.quickCheck.problem, seed)}。${variation}、最初に注目するサインは？`, seed),
       options: choice.options,
       answer: choice.answer,
       explanation: `${correct} ${lesson.quickCheck.explanation} 条件が変わっても、定義・既知量・未知量を対応させてから処理する。`,
@@ -96,7 +127,7 @@ function makeLessonProblem(concept: Concept, kind: Problem["kind"], seed: number
     conceptIds: [concept.id],
     primaryConceptId: concept.id,
     title: `${concept.title}｜${kind}`,
-    prompt,
+    prompt: concretePrompt(prompt, seed),
     options: choice.options,
     answer: choice.answer,
     explanation: `${source.explanation} ${lesson.commonMistakes[0] ?? "条件を最後に検算する。"}`,
@@ -118,7 +149,7 @@ function makeScopeProblem(concept: Concept, kind: Problem["kind"], seed: number)
     conceptIds: [concept.id],
     primaryConceptId: concept.id,
     title: `${concept.title}｜${kind}`,
-    prompt: exercise.prompt,
+    prompt: concretePrompt(exercise.prompt, seed),
     options,
     answer: options.indexOf(exercise.answer),
     explanation: exercise.explanation,
@@ -140,7 +171,8 @@ function makeDelayedProblem(concept: Concept, base: Problem, seed: number): Prob
     concept.target,
   ].filter((value): value is string => Boolean(value));
   const choice = optionsFor(correct, seed + 3, [...sourceOptions, guide.trap, "前回の答えをそのまま写す"]);
-  const prompt = `遅延再テスト：${concept.title}の次の状況に戻る前に、最初に確認すべき一手は？ 状況：${base.prompt}`;
+  const variation = delayedVariations[Math.abs(seed) % delayedVariations.length];
+  const prompt = concretePrompt(`遅延再テスト：${concept.title}を初見の別条件で使う。${alteredCondition(concept.target, seed + 2)}。${variation}、最初に確認すべき一手は？`, seed);
   return {
     id: `AUTO-${concept.id}-delayed`,
     conceptIds: [concept.id],

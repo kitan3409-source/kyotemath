@@ -137,6 +137,23 @@ test("exam normalizers reject future sessions and section-level history tamperin
   assert.equal(normalizeExamHistory([{ ...result, extra: true }]).length, 0);
 });
 
+test("exam history recomputes the score from the submitted answer ledger", () => {
+  const form = buildExamForms(syntheticBank())[0];
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  const submittedAt = new Date(Date.now() - 30_000).toISOString();
+  const result = scoreExam(form, {}, [], startedAt, submittedAt, false);
+  const forged = {
+    ...result,
+    score: 100,
+    percentage: 100,
+    unanswered: [],
+    questionResults: Object.fromEntries(Object.keys(result.questionResults).map((id) => [id, "correct"])),
+    bySection: Object.fromEntries(Object.entries(result.bySection).map(([id, section]) => [id, { ...section, score: section.points, unanswered: 0 }])),
+  };
+  assert.equal(normalizeExamHistory([forged]).length, 0);
+  assert.equal(normalizeExamHistory([{ ...result, submittedAnswers: { fake: 0 } }]).length, 0);
+});
+
 test("induction is visible in follow-up prompts and option selection is not duplicated", () => {
   const form = buildExamForms(syntheticBank())[0];
   const section = form.sections[0];
@@ -160,7 +177,7 @@ test("follow-up questions materialize from the learner's previous answer", () =>
   assert.ok(baselineFollowUp);
   assert.notEqual(changed?.linkedAnswerValue, baselineFollowUp?.linkedAnswerValue);
   assert.notDeepEqual(changed?.options, baselineFollowUp?.options);
-  assert.notEqual(changed?.answer, baselineFollowUp?.answer);
+  assert.equal(changed?.answer, baselineFollowUp?.answer);
   assert.notEqual(changed?.prompt, baselineFollowUp?.prompt);
   assert.notEqual(changed?.explanation, baselineFollowUp?.explanation);
 });
@@ -175,7 +192,7 @@ test("G5 evidence uses the first submission for each IA and IIBC form", () => {
     const completeAnswers = answers ?? Object.fromEntries(questions.map((question) => [question.id, question.answer]));
     const startedAt = "2026-08-18T00:00:00.000Z";
     const submittedAt = new Date(Date.parse(startedAt) + minutes * 60_000).toISOString();
-    return scoreExam(form, completeAnswers, selected, startedAt, submittedAt, timedOut);
+    return { ...scoreExam(form, completeAnswers, selected, startedAt, submittedAt, timedOut), firstSubmission: true };
   };
   const valid = G5_FORM_IDS.map((formId) => resultFor(formId, 60));
   const summary = summarizeG5Evidence(valid);
@@ -184,7 +201,7 @@ test("G5 evidence uses the first submission for each IA and IIBC form", () => {
   assert.equal(summary.allConditionsMet, true);
 
   const failedFirst = resultFor("IA-F1", 60, {});
-  const laterPass = resultFor("IA-F1", 60);
+  const laterPass = { ...resultFor("IA-F1", 60), firstSubmission: false };
   const retried = summarizeG5Evidence([failedFirst, laterPass, ...valid.filter((result) => result.formId !== "IA-F1")]);
   const firstRow = retried.rows.find((row) => row.formId === "IA-F1");
   assert.equal(firstRow.status, "failed");

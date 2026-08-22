@@ -44,13 +44,24 @@ for (const concept of generatedNonIII) {
 }
 
 const genericBulkPatterns = ["意味・定義として正しいもの", "最初の一手として最も適切", "典型的な罠を見抜く"];
+const concreteConditionPattern = /[0-9０-９=＜＞≤≥≠+−\-*/^√∩∪]/u;
+function hasConcreteCondition(prompt) {
+  const conditionText = prompt.replace(/^補強演習（[^）]+）：/u, "").replace(/\b[A-Z]+-\d+\b/g, "");
+  if (/次の目標を達成するために必要な判断を答えよ/u.test(conditionText)) return false;
+  return concreteConditionPattern.test(conditionText);
+}
 for (const problem of problemExpansionBulk) {
   if (!problem.id.startsWith("X4-B")) errors.push(`${problem.id}: bulk ID prefix is invalid`);
   if (problem.options.length !== 4 || new Set(problem.options).size !== 4) errors.push(`${problem.id}: bulk options are not four unique choices`);
   if (!Number.isInteger(problem.answer) || problem.answer < 0 || problem.answer >= problem.options.length) errors.push(`${problem.id}: bulk answer is invalid`);
   if (genericBulkPatterns.some((pattern) => problem.prompt.includes(pattern))) errors.push(`${problem.id}: bulk prompt is still a meta template`);
-  if (!/[0-9０-９]/u.test(problem.prompt)) errors.push(`${problem.id}: bulk prompt has no concrete numeric condition`);
+  if (!hasConcreteCondition(problem.prompt)) errors.push(`${problem.id}: bulk prompt has no concrete mathematical condition`);
   if (!problem.explanation.includes(problem.options[problem.answer])) errors.push(`${problem.id}: bulk explanation omits the correct option`);
+}
+const generatedProblems = problemBank.filter((problem) => problem.id.startsWith("AUTO-") || problem.id.startsWith("X4-B"));
+const generatedWithoutConcreteCondition = generatedProblems.filter((problem) => !concreteConditionPattern.test(problem.prompt));
+for (const problem of generatedWithoutConcreteCondition) {
+  errors.push(`${problem.id}: generated prompt has no literal numeric or symbolic condition`);
 }
 const bulkByConcept = new Map();
 for (const problem of problemExpansionBulk) {
@@ -59,8 +70,10 @@ for (const problem of problemExpansionBulk) {
   bulkByConcept.set(problem.primaryConceptId, stages);
 }
 for (const [conceptId, stages] of bulkByConcept) {
+  const quickPrompt = stages.quick?.prompt?.replace(/^補強演習（[^）]+）：/u, "");
   const standardPrompt = stages.standard?.prompt?.replace(/^補強演習（[^）]+）：/u, "");
   const transferPrompt = stages.transfer?.prompt?.replace(/^補強演習（[^）]+）：/u, "");
+  if (quickPrompt && transferPrompt && transferPrompt.includes(quickPrompt)) errors.push(`${conceptId}: transfer embeds the quick prompt`);
   if (standardPrompt && transferPrompt && standardPrompt === transferPrompt) errors.push(`${conceptId}: transfer repeats the standard prompt`);
 }
 
@@ -96,7 +109,11 @@ const result = {
   math3Problems: math3Problems.length,
   bulkProblems: problemExpansionBulk.length,
   delayedProblems: delayedProblems.length,
-  concreteBulkProblems: problemExpansionBulk.filter((problem) => /[0-9０-９]/u.test(problem.prompt)).length,
+  concreteBulkProblems: problemExpansionBulk.filter((problem) => {
+    return hasConcreteCondition(problem.prompt);
+  }).length,
+  generatedProblems: generatedProblems.length,
+  generatedWithoutConcreteCondition: generatedWithoutConcreteCondition.length,
   fallbackRisk: missingCards.length,
   errors,
 };
