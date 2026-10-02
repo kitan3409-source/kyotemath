@@ -2,14 +2,14 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "共テ数学60",
-  description: "高校数学を1概念ずつつなぎ、共通テスト6割を目指す学習PWA。",
+  title: "受験OS",
+  description: "2027共通テストの9科目を単元学習・記録・志望校シミュレーションでつなぐ受験OS。目標は合計60〜70%。",
   manifest: "/manifest.webmanifest",
   other: {
     "codex-preview": "development",
     "apple-mobile-web-app-capable": "yes",
     "apple-mobile-web-app-status-bar-style": "black-translucent",
-    "apple-mobile-web-app-title": "数学60",
+    "apple-mobile-web-app-title": "受験OS",
     "format-detection": "telephone=no",
   },
   icons: {

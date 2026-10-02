@@ -63,9 +63,23 @@ import {
   type CompletedStudySessionSummary,
   type StudySessionState,
 } from "./study-session";
+import {
+  EXAM_DATE_LABEL,
+  SCORE_SLOTS,
+  SUBJECTS,
+  SUBJECT_BY_ID,
+  daysLeft,
+  type LearningSubjectId,
+  type OsUnit,
+  type UnitProblem,
+} from "./os/model";
+import { allUnits, diagnosticProblems, unitById, unitsBySubject } from "./os/units";
+import { loadOsState, mergeOsState, nextReviewDue, normalizeOsState, saveOsState, type OsState } from "./os/state";
+import { SCENARIOS, buildPlan, gapToScenario, subjectEstimate, totalEstimate } from "./os/planner";
+import { UNIVERSITIES, bestMarginalSubject, convertedScore } from "./os/universities";
 
 type Concept = (typeof conceptData.concepts)[number];
-type Tab = "today" | "map" | "practice" | "mock" | "settings";
+type Tab = "today" | "subjects" | "map" | "practice" | "mock" | "records" | "universities" | "settings";
 type CourseFilter = "all" | "bridge" | "I" | "A" | "II" | "B" | "C" | "III";
 type Attempt = { correct: number; total: number; lastAt: string; dueAt?: string; streak?: number; lastErrorCause?: ErrorCause; retry?: RetryState; evidence?: AttemptEvidence[] };
 type Feedback = PracticeFeedback;
@@ -363,19 +377,29 @@ function dayKey(date = new Date()) {
   return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(date);
 }
 
-function currentStreak(studyDates: string[]) {
-  const known = new Set(studyDates);
-  const cursor = new Date(`${dayKey()}T12:00:00+09:00`);
-  let streak = 0;
-  while (known.has(dayKey(cursor))) {
-    streak += 1;
-    cursor.setDate(cursor.getDate() - 1);
-  }
-  return streak;
-}
-
 function currentTime() {
   return Date.now();
+}
+
+function RecordForm({ onAdd }: { onAdd: (entry: { material: string; slotId: string; score: number; maxScore: number; minutes?: number }) => void }) {
+  const [material, setMaterial] = useState("");
+  const [slotId, setSlotId] = useState("kokugo");
+  const [score, setScore] = useState("");
+  const [maxScore, setMaxScore] = useState("100");
+  const [minutes, setMinutes] = useState("");
+  const valid = material.trim().length > 0 && Number(score) >= 0 && Number(maxScore) > 0 && Number(score) <= Number(maxScore);
+  return (
+    <section className="panel-card record-form">
+      <div className="record-form-grid">
+        <label className="field"><span>教材・模試名</span><input value={material} onChange={(e) => setMaterial(e.target.value)} placeholder="例: 共通テスト2025本試 / 進研7月" /></label>
+        <label className="field"><span>科目</span><select value={slotId} onChange={(e) => setSlotId(e.target.value)}>{SCORE_SLOTS.map((slot) => <option key={slot.id} value={slot.id}>{slot.label}</option>)}{SUBJECTS.filter((s) => !SCORE_SLOTS.some((slot) => slot.id === s.id)).map((s) => <option key={s.id} value={s.id}>{s.shortLabel}</option>)}</select></label>
+        <label className="field"><span>点数</span><input inputMode="numeric" value={score} onChange={(e) => setScore(e.target.value)} placeholder="例: 62" /></label>
+        <label className="field"><span>満点</span><input inputMode="numeric" value={maxScore} onChange={(e) => setMaxScore(e.target.value)} /></label>
+        <label className="field"><span>所要時間（任意・分）</span><input inputMode="numeric" value={minutes} onChange={(e) => setMinutes(e.target.value)} placeholder="例: 70" /></label>
+      </div>
+      <button className="button button-primary" type="button" disabled={!valid} onClick={() => onAdd({ material: material.trim(), slotId, score: Number(score), maxScore: Number(maxScore), minutes: minutes ? Number(minutes) : undefined })}>記録する</button>
+    </section>
+  );
 }
 
 export default function Home() {
@@ -419,6 +443,21 @@ export default function Home() {
   const [sessionEvidence, setSessionEvidence] = useState<SessionEvidence | null>(null);
   const [sessionStartAttempts, setSessionStartAttempts] = useState(0);
   const [sessionStartRoute, setSessionStartRoute] = useState(0);
+  // ---- 受験OSレイヤー ----
+  const [osState, setOsState] = useState<OsState>(() => ({ version: 1, unitStates: {}, records: [], diagnosticsDone: {} as OsState["diagnosticsDone"], scienceChoice: null, socialChoice: null, customMinutes: null, updatedAt: "" }));
+  const [todayMinutes, setTodayMinutes] = useState(60);
+  const [subjectViewId, setSubjectViewId] = useState<LearningSubjectId | null>(null);
+  const [openUnitId, setOpenUnitId] = useState<string | null>(null);
+  const [unitStep, setUnitStep] = useState<"overview" | "worked" | "practice">("overview");
+  const [unitProblemIndex, setUnitProblemIndex] = useState(0);
+  const [unitAnswer, setUnitAnswer] = useState<number | null>(null);
+  const [unitFeedback, setUnitFeedback] = useState<{ correct: boolean; note?: string } | null>(null);
+  const [unitErrorCause, setUnitErrorCause] = useState<string | null>(null);
+  const [diagnosticSubjectId, setDiagnosticSubjectId] = useState<LearningSubjectId | null>(null);
+  const [diagnosticIndex, setDiagnosticIndex] = useState(0);
+  const [diagnosticAnswers, setDiagnosticAnswers] = useState<Record<string, number>>({});
+  const [recordFormOpen, setRecordFormOpen] = useState(false);
+  const [uniPicker, setUniPicker] = useState<string>(UNIVERSITIES[0].id);
   const audioRef = useRef<{ context: AudioContext; node: ScriptProcessorNode } | null>(null);
   const studySessionRef = useRef<StoredStudySession | null>(null);
   const focusAutoStopRef = useRef<string | null>(null);
@@ -519,6 +558,9 @@ export default function Home() {
           ? startStudySession({ id: `legacy-focus-${legacyStartedAt}`, startedAtMs: legacyStartedAt })
           : null;
         const recoveredSession = storedSession ?? legacySession;
+        const storedOs = loadOsState();
+        setOsState(storedOs);
+        if (storedOs.customMinutes) setTodayMinutes(storedOs.customMinutes);
         if (recoveredSession) {
           const resumed = resumeStudySession(recoveredSession, now);
           studySessionRef.current = resumed;
@@ -607,6 +649,11 @@ export default function Home() {
       : undefined;
     void saveProgress({ mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice, errorHistory, examSession: examSession ?? undefined, examHistory, foundationSkipped });
   }, [attempts, awaySeconds, errorHistory, examHistory, examSession, foundationSkipped, guideSeen, hydrated, lessonStep, mastery, practiceAnswer, practiceErrorCause, practiceFeedback, practicePhase, practiceProblemId, practiceResumeActive, practiceReviewCause, selectedConceptId, studyDates, studySeconds]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    saveOsState(osState);
+  }, [hydrated, osState]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -790,28 +837,170 @@ export default function Home() {
   const currentExamQuestion = currentExamQuestions[currentExamIndex];
 
   const totalAttempts = Object.values(attempts).reduce((sum, value) => sum + value.total, 0);
-  const totalCorrect = Object.values(attempts).reduce((sum, value) => sum + value.correct, 0);
   const liveStudySeconds = studySeconds + (studySession ? sessionStudySeconds(studySession, currentTime()) : 0);
   const liveAwaySeconds = awaySeconds + (studySession ? sessionAwaySeconds(studySession, currentTime()) : 0);
   const studyProgress = getStudyProgress(liveStudySeconds);
-  const studyMilestones = [10 / 60, 0.5, 1, 3, 5, 10, 25, 50, 100, 200, 350, 500, 700];
-  const nextStudyMilestone = studyMilestones.find((hours) => studyProgress.studiedHours < hours) ?? 700;
-  const milestoneRemainingSeconds = Math.max(0, Math.ceil(nextStudyMilestone * 3600 - liveStudySeconds));
   const routeTouchedCount = commonTestConcepts.filter(isRouteTouched).length;
   const routeCompleteCount = commonTestConcepts.filter(isRouteComplete).length;
   const routeProgress = commonTestConcepts.length ? Math.round((routeCompleteCount / commonTestConcepts.length) * 100) : 0;
-  const availableConceptCount = commonTestConcepts.filter((concept) => hasPractice(concept.id)).length;
-  const learnedCount = commonTestConcepts.filter((concept) => (mastery[concept.id] ?? 0) >= 4).length;
   const selectedLevel = mastery[selectedConcept.id] ?? 0;
-  const targetProblem = problemByConcept.get(nextConcept.id);
-  const streak = currentStreak(studyDates);
-  const targetDueAt = dueAtForConcept(nextConcept.id);
-  const targetDue = Boolean(targetDueAt && Date.parse(targetDueAt) <= currentTime());
   const examRemainingSeconds = examSession?.active ? Math.max(0, Math.ceil((Date.parse(examSession.deadlineAt) - examNow) / 1000)) : 0;
   const latestExamResult = examSession?.finished && examSession.submittedAt
     ? examHistory.find((result) => result.formId === examSession.formId && result.submittedAt === examSession.submittedAt) ?? examHistory.filter((result) => result.formId === examSession.formId).at(-1)
     : undefined;
   const g5Evidence = summarizeG5Evidence(examHistory);
+
+  // ---- 受験OS: derived values ----
+  const osNowMs = currentTime();
+  const osDaysLeft = daysLeft(osNowMs);
+  const mathEstimate = (() => {
+    const pctFor = (courses: string[]) => {
+      const list = commonTestConcepts.filter((concept) => courses.includes(concept.course));
+      if (!list.length) return 0.04;
+      const avg = list.reduce((sum, concept) => sum + Math.min(4, mastery[concept.id] ?? 0), 0) / (list.length * 4);
+      return Math.max(0.04, avg * 0.9);
+    };
+    const paper = (id: string) => {
+      const latest = examHistory.filter((result) => result.paper === id).at(-1);
+      return latest ? latest.percentage / 100 : null;
+    };
+    const iaContent = pctFor(["I", "A"]);
+    const iibcContent = pctFor(["II", "B", "C"]);
+    const iaExam = paper("math1a");
+    const iibcExam = paper("math2bc");
+    return {
+      ia: iaExam === null ? iaContent : 0.5 * iaExam + 0.5 * iaContent,
+      iibc: iibcExam === null ? iibcContent : 0.5 * iibcExam + 0.5 * iibcContent,
+    };
+  })();
+  const osTotal = totalEstimate(osState, mathEstimate);
+  const planTasks = buildPlan(todayMinutes, osState, nextConcept.id, nextConcept.title, osNowMs);
+  const dueUnits = allUnits.filter((unit) => {
+    const state = osState.unitStates[unit.id];
+    return Boolean(state?.dueAt && Date.parse(state.dueAt) <= osNowMs && (state.level ?? 0) >= 1);
+  });
+  const selectedUnit = openUnitId ? unitById.get(openUnitId) ?? null : null;
+  const selectedSubject = subjectViewId ? SUBJECT_BY_ID.get(subjectViewId) ?? null : null;
+  const currentUnitProblem: UnitProblem | null = selectedUnit ? selectedUnit.problems[Math.min(unitProblemIndex, selectedUnit.problems.length - 1)] ?? null : null;
+  const diagnosticList = diagnosticSubjectId ? diagnosticProblems(diagnosticSubjectId) : [];
+
+  // ---- 受験OS: actions ----
+  function updateOs(mutator: (draft: OsState) => OsState) {
+    setOsState((previous) => mutator({ ...previous }));
+  }
+
+  function openUnit(unit: OsUnit) {
+    setSubjectViewId(unit.subjectId);
+    setOpenUnitId(unit.id);
+    setUnitStep("overview");
+    setUnitProblemIndex(0);
+    setUnitAnswer(null);
+    setUnitFeedback(null);
+    setUnitErrorCause(null);
+  }
+
+  function submitUnitAnswer() {
+    if (!selectedUnit || !currentUnitProblem || unitAnswer === null || unitFeedback) return;
+    const correct = unitAnswer === currentUnitProblem.answer;
+    const nowIso = new Date().toISOString();
+    const note = !correct && currentUnitProblem.optionNotes?.[unitAnswer] ? currentUnitProblem.optionNotes[unitAnswer] : undefined;
+    setUnitFeedback({ correct, note });
+    setUnitErrorCause(null);
+    updateOs((draft) => {
+      const prev = draft.unitStates[selectedUnit.id] ?? { level: 0, attempts: 0, correct: 0 };
+      const kindLevel = { quick: 1, standard: 2, transfer: 3 }[currentUnitProblem.kind];
+      const duePassed = Boolean(prev.dueAt && Date.parse(prev.dueAt) <= osNowMs);
+      let level = prev.level;
+      if (correct) {
+        if (prev.level >= 3 && duePassed) level = 4;
+        else level = Math.max(level, Math.min(kindLevel, 3));
+      }
+      const dueAt = correct
+        ? (level >= 4 ? nextReviewDue(nowIso, "ok") : currentUnitProblem.kind === "transfer" ? nextReviewDue(nowIso, "ok") : undefined)
+        : nextReviewDue(nowIso, "wrong");
+      draft.unitStates[selectedUnit.id] = {
+        ...prev,
+        level,
+        attempts: prev.attempts + 1,
+        correct: prev.correct + (correct ? 1 : 0),
+        lastAt: nowIso,
+        dueAt,
+        lastErrorCause: correct ? undefined : prev.lastErrorCause,
+      };
+      return draft;
+    });
+    recordStudyDay();
+  }
+
+  function chooseUnitErrorCause(cause: string) {
+    if (!selectedUnit || !unitFeedback || unitFeedback.correct) return;
+    setUnitErrorCause(cause);
+    updateOs((draft) => {
+      const prev = draft.unitStates[selectedUnit.id];
+      if (prev) draft.unitStates[selectedUnit.id] = { ...prev, lastErrorCause: cause };
+      return draft;
+    });
+  }
+
+  function advanceUnitProblem() {
+    if (!selectedUnit) return;
+    const last = unitProblemIndex >= selectedUnit.problems.length - 1;
+    if (last) {
+      setUnitStep("overview");
+      setUnitProblemIndex(0);
+      setOpenUnitId(null);
+      setUnitAnswer(null);
+      setUnitFeedback(null);
+      setUnitErrorCause(null);
+      return;
+    }
+    setUnitProblemIndex((prev) => prev + 1);
+    setUnitAnswer(null);
+    setUnitFeedback(null);
+    setUnitErrorCause(null);
+  }
+
+  function startOsDiagnostic(subjectId: LearningSubjectId) {
+    setDiagnosticSubjectId(subjectId);
+    setDiagnosticIndex(0);
+    setDiagnosticAnswers({});
+    setActiveTab("subjects");
+  }
+
+  function answerDiagnostic(optionIndex: number) {
+    const entry = diagnosticList[diagnosticIndex];
+    if (!entry) return;
+    setDiagnosticAnswers((previous) => ({ ...previous, [entry.problem.id]: optionIndex }));
+    const nextIndex = diagnosticIndex + 1;
+    if (nextIndex < diagnosticList.length) {
+      setDiagnosticIndex(nextIndex);
+      return;
+    }
+    // 診断完了: 正答した単元を level 2（理解済/標準通過相当）に設定
+    const answers = { ...diagnosticAnswers, [entry.problem.id]: optionIndex };
+    updateOs((draft) => {
+      for (const item of diagnosticList) {
+        const chosen = answers[item.problem.id];
+        if (chosen === item.problem.answer) {
+          const prev = draft.unitStates[item.unitId] ?? { level: 0, attempts: 0, correct: 0 };
+          draft.unitStates[item.unitId] = { ...prev, level: Math.max(prev.level, 2), attempts: prev.attempts + 1, correct: prev.correct + 1, lastAt: new Date().toISOString() };
+        }
+      }
+      if (diagnosticSubjectId) draft.diagnosticsDone[diagnosticSubjectId] = new Date().toISOString();
+      return draft;
+    });
+    setDiagnosticSubjectId(null);
+    setDiagnosticIndex(0);
+    setDiagnosticAnswers({});
+  }
+
+  function addRecord(entry: { material: string; slotId: string; score: number; maxScore: number; minutes?: number }) {
+    updateOs((draft) => {
+      draft.records = [{ id: `rec-${Date.now().toString(36)}`, date: new Date().toISOString(), ...entry }, ...draft.records];
+      return draft;
+    });
+    setRecordFormOpen(false);
+  }
 
   const filteredConcepts = (() => {
     const query = mapSearch.trim().toLowerCase();
@@ -1236,13 +1425,13 @@ export default function Home() {
   }
 
   function exportData() {
-    const payload = { exportedAt: new Date().toISOString(), mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice: currentPracticeResume(), errorHistory, examSession, examHistory, foundationSkipped, curriculum: "high_school_math_concepts.v1" };
-    const fileName = "kyote-math-60-progress.json";
+    const payload = { exportedAt: new Date().toISOString(), mastery, attempts, studyDates, studySeconds, awaySeconds, guideSeen, practice: currentPracticeResume(), errorHistory, examSession, examHistory, os: osState, foundationSkipped, curriculum: "high_school_math_concepts.v1" };
+    const fileName = "kyote-os-progress.json";
     const content = JSON.stringify(payload, null, 2);
     const file = new File([content], fileName, { type: "application/json" });
     const isStandalone = window.matchMedia("(display-mode: standalone)").matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
     if (isStandalone && navigator.share && navigator.canShare?.({ files: [file] })) {
-      void navigator.share({ files: [file], title: "共テ数学60の学習記録" }).catch((error: unknown) => {
+      void navigator.share({ files: [file], title: "受験OSの学習記録" }).catch((error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
         downloadData(content, fileName);
       });
@@ -1266,10 +1455,15 @@ export default function Home() {
     event.target.value = "";
     if (!file) return;
     try {
-      const imported = normalizeImportedProgress(JSON.parse(await file.text()) as unknown);
+      const parsed = JSON.parse(await file.text()) as unknown;
+      const imported = normalizeImportedProgress(parsed);
       if (!imported) {
         window.alert("このJSONには利用できる学習記録がありません。");
         return;
+      }
+      if (isRecord(parsed) && parsed.os !== undefined) {
+        const importedOs = normalizeOsState(parsed.os);
+        setOsState((previous) => mergeOsState(previous, importedOs));
       }
       setMastery(imported.mastery);
       setAttempts(imported.attempts);
@@ -1356,57 +1550,387 @@ export default function Home() {
     setPracticePhase("lesson");
     setLessonStep("overview");
     setExpandedConceptId(null);
+    setOsState({ version: 1, unitStates: {}, records: [], diagnosticsDone: {} as OsState["diagnosticsDone"], scienceChoice: null, socialChoice: null, customMinutes: null, updatedAt: new Date().toISOString() });
+    removeStored("kyote-os:state");
     stopNoise();
     setSetupOpen(true);
     setActiveTab("today");
   }
 
+  function runPlanTask(task: (typeof planTasks)[number]) {
+    if (task.kind === "diagnostic" && task.subjectId) { startOsDiagnostic(task.subjectId); return; }
+    if (task.kind === "record") { setActiveTab("records"); setRecordFormOpen(true); return; }
+    if (task.unitId && conceptById.has(task.unitId)) {
+      const concept = conceptById.get(task.unitId);
+      if (concept) openPracticeFor(concept);
+      return;
+    }
+    if (task.unitId) {
+      const unit = unitById.get(task.unitId);
+      if (unit) { openUnit(unit); setActiveTab("subjects"); }
+    }
+  }
+
   function renderToday() {
-    const target = nextConcept;
+    const gap60 = SCENARIOS.map((scenario) => {
+      const rows = gapToScenario(scenario, osState, mathEstimate);
+      const achieved = rows.reduce((sum, row) => sum + (row.current / 100) * (SCORE_SLOTS.find((s) => s.id === row.slotId)?.maxPoints ?? 0), 0);
+      const needed = (scenario.targetPct / 100) * 1000;
+      return { pct: scenario.targetPct, achieved: Math.round(achieved), gap: Math.round(needed - achieved) };
+    });
+    const recentRecords = osState.records.slice(0, 3);
+    const topEstimates = SUBJECTS.filter((subject) => subject.id !== "chem" && subject.id !== "geo" && subject.id !== "world")
+      .map((subject) => ({ subject, pct: Math.round(subjectEstimate(subject.id, osState) * 100) }))
+      .sort((a, b) => b.pct - a.pct).slice(0, 4);
     return (
       <div className="page-stack">
         <section className="hero-card">
           <div className="hero-copy">
-            <p className="eyebrow accent">NEXT BEST ACTION</p>
-            <h2>{routeProgress >= 100 ? "共テルート100%。定着へ。" : "今日は、次の1概念だけ。"}</h2>
-            <p className="hero-description">{routeProgress >= 100 ? "一度通った道は消えません。復習とミニ模試で、解ける状態を保とう。" : "0→100%の順路から、いまの次の1概念だけを表示。間違えても、触れた証拠は残ります。"}</p>
+            <p className="eyebrow accent">{EXAM_DATE_LABEL} 本試験まで</p>
+            <h2>あと <span className="hero-days">{osDaysLeft}</span> 日。今日は{todayMinutes}分で最適化。</h2>
+            <p className="hero-description">推定総合 {osTotal.pct}%（{osTotal.points}点/1000）。60%にあと{Math.max(0, gap60[0].gap)}点・65%に{Math.max(0, gap60[1].gap)}点・70%に{Math.max(0, gap60[2].gap)}点。</p>
             <div className="hero-actions">
-              <button className="button button-primary" type="button" onClick={openTarget}>{practiceResumeActive ? "続きから再開" : targetProblem ? "次の1概念を始める" : "解説から進む"} <span>→</span></button>
+              <button className="button button-primary" type="button" onClick={() => { if (planTasks[0]) runPlanTask(planTasks[0]); else openTarget(); }}>今すぐ始める <span>→</span></button>
               <button className="button button-ghost" onClick={() => setFocusOpen(true)}>集中タイマー</button>
             </div>
           </div>
-          <div className="coverage-orb" style={{ background: `conic-gradient(var(--lime) ${routeProgress}%, var(--line) 0)` }}>
-            <div className="orb-inner"><strong>{routeProgress}%</strong><span>ルート進捗</span></div>
+          <div className="coverage-orb" style={{ background: `conic-gradient(var(--lime) ${Math.min(100, osTotal.pct)}%, var(--line) 0)` }}>
+            <div className="orb-inner"><strong>{osTotal.pct}%</strong><span>総合推定</span></div>
           </div>
-          <div className="hero-meta"><span>{targetDue ? "復習期限" : routeProgress >= 100 ? "定着フェーズ" : "次のルート"}</span><strong>{courseLabels[target.course]} / {target.id}</strong><small>{target.unit}</small></div>
+          <div className="hero-meta"><span>今日の目標</span><strong>{planTasks.length}タスク / {todayMinutes}分</strong><small>{dueUnits.length > 0 ? `復習期限 ${dueUnits.length}件` : "新規学習中心"}</small></div>
         </section>
 
-        <section className="target-card panel-card">
-          <div className="target-index">01</div>
-          <div className="target-content">
-            <p className="eyebrow">TODAY&apos;S CONCEPT</p>
-            <h3>{target.title}</h3>
-            <p>{target.target}</p>
-            <div className="tag-row"><span className="tag">{courseLabels[target.course]}</span><span className="tag">{target.priority === "core" ? "共テの幹線" : "補助レーン"}</span>{target.tags.slice(0, 2).map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div>
+        <section className="panel-card time-picker-card">
+          <p className="eyebrow">TODAY&apos;S AVAILABLE TIME</p>
+          <div className="time-picker" role="group" aria-label="今日の学習時間">
+            {[30, 60, 120, 180, 300].map((minutes) => (
+              <button key={minutes} type="button" className={`time-chip ${todayMinutes === minutes ? "selected" : ""}`} aria-pressed={todayMinutes === minutes} onClick={() => { setTodayMinutes(minutes); updateOs((draft) => ({ ...draft, customMinutes: minutes })); }}>{minutes < 60 ? `${minutes}分` : `${minutes / 60}時間`}</button>
+            ))}
+            <label className="time-custom"><input type="number" min={10} max={600} value={todayMinutes} aria-label="カスタム分数" onChange={(event) => { const value = Math.max(10, Math.min(600, Number(event.target.value) || 10)); setTodayMinutes(value); updateOs((draft) => ({ ...draft, customMinutes: value })); }} />分</label>
           </div>
-          <div className="target-side"><span>{targetDue ? "復習" : targetProblem ? "問題" : "ガイド"}</span><strong>{targetProblem?.estimatedSeconds ? `${Math.ceil(targetProblem.estimatedSeconds / 60)}分` : "1分"}</strong><button className="text-button" type="button" onClick={() => { setSelectedConceptId(target.id); setMapSearch(target.id); setActiveTab("map"); }}>マップで見る →</button></div>
         </section>
+
+        <div className="section-heading"><div><p className="eyebrow accent">TODAY&apos;S PLAN</p><h3>優先度の高い順に最大3件</h3></div><span className="quiet-label">限界効用×忘却×所要時間で選択</span></div>
+        {planTasks.length === 0 ? (
+          <section className="panel-card empty-state"><p>すべての単元を習得済み。記録タブで模試結果を追加するか、復習を待ちましょう。</p></section>
+        ) : planTasks.map((task, index) => (
+          <section className="target-card panel-card" key={task.id}>
+            <div className="target-index">{String(index + 1).padStart(2, "0")}</div>
+            <div className="target-content">
+              <p className="eyebrow">{task.reason}</p>
+              <h3>{task.label}</h3>
+              <div className="tag-row">{task.subjectId && <span className="tag">{SUBJECT_BY_ID.get(task.subjectId)?.shortLabel}</span>}<span className="tag">約{task.minutes}分</span>{task.kind === "review" && <span className="tag">復習</span>}{task.kind === "diagnostic" && <span className="tag">診断</span>}</div>
+            </div>
+            <div className="target-side"><button className="button button-secondary" type="button" onClick={() => runPlanTask(task)}>始める →</button></div>
+          </section>
+        ))}
+
+        {dueUnits.length > 0 && (
+          <section className="panel-card due-card">
+            <p className="eyebrow">REVIEW DUE</p>
+            <ul className="due-list">
+              {dueUnits.slice(0, 4).map((unit) => <li key={unit.id}><span>{SUBJECT_BY_ID.get(unit.subjectId)?.shortLabel}</span><button type="button" className="text-button" onClick={() => { openUnit(unit); setActiveTab("subjects"); }}>{unit.title} →</button></li>)}
+            </ul>
+          </section>
+        )}
 
         <div className="section-heading"><div><p className="eyebrow">YOUR SIGNALS</p><h3>学習の現在地</h3></div><span className="quiet-label">端末内に保存</span></div>
         <section className="metric-grid">
-          <article className="metric-card"><span className="metric-label">共テルート</span><strong>{routeProgress}<small>%</small></strong><div className="mini-bar" role="progressbar" aria-label="共テ学習ルート" aria-valuemin={0} aria-valuemax={100} aria-valuenow={routeProgress}><i style={{ width: `${routeProgress}%` }} /></div><p>{routeTouchedCount} / {commonTestConcepts.length}概念に触れた</p></article>
+          <article className="metric-card"><span className="metric-label">総合推定</span><strong>{osTotal.pct}<small>%</small></strong><div className="mini-bar" role="progressbar" aria-label="総合推定得点率" aria-valuemin={0} aria-valuemax={100} aria-valuenow={osTotal.pct}><i style={{ width: `${osTotal.pct}%` }} /></div><p>{osTotal.points}点 / 1000満点</p></article>
           <article className="metric-card"><span className="metric-label">学習貯金</span><strong>{formatStudyAmount(liveStudySeconds)}<small> / 700h</small></strong><div className="mini-bar" role="progressbar" aria-label="700時間トラック" aria-valuemin={0} aria-valuemax={100} aria-valuenow={studyProgress.percent}><i style={{ width: `${Math.min(100, studyProgress.percent)}%` }} /></div><p>{liveAwaySeconds ? `${formatTime(liveAwaySeconds)} はスマホを置いた` : "タイマーで証拠を残そう"}</p></article>
-          <article className="metric-card"><span className="metric-label">習得確認</span><strong>{learnedCount}<small> / {commonTestConcepts.length}</small></strong><div className="mini-bar" role="progressbar" aria-label="遅延再テストまでの習得確認" aria-valuemin={0} aria-valuemax={100} aria-valuenow={(learnedCount / commonTestConcepts.length) * 100}><i style={{ width: `${(learnedCount / commonTestConcepts.length) * 100}%` }} /></div><p>{availableConceptCount}概念に演習あり</p></article>
-          <article className="metric-card"><span className="metric-label">累計の証拠</span><strong>{totalAttempts}<small>問</small></strong><div className="streak-dots">{[0, 1, 2, 3, 4, 5, 6].map((day) => <i className={day < streak ? "active" : ""} key={day} />)}</div><p>{totalAttempts ? `${totalCorrect}問正解・${studyDates.length}日記録` : "最初の1問で記録"}</p></article>
+          <article className="metric-card"><span className="metric-label">強い科目</span><strong>{topEstimates[0]?.subject.shortLabel ?? "—"}<small> {topEstimates[0]?.pct ?? 0}%</small></strong><p>{topEstimates.map((entry) => `${entry.subject.shortLabel} ${entry.pct}%`).join("・")}</p></article>
+          <article className="metric-card"><span className="metric-label">数学ルート</span><strong>{routeProgress}<small>%</small></strong><div className="mini-bar" role="progressbar" aria-label="数学ルート進捗" aria-valuemin={0} aria-valuemax={100} aria-valuenow={routeProgress}><i style={{ width: `${routeProgress}%` }} /></div><p>{routeTouchedCount} / {commonTestConcepts.length}概念に触れた</p></article>
         </section>
 
-        <section className="study-progress-card panel-card">
-          <div className="study-progress-heading"><div><p className="eyebrow accent">YOUR 700-HOUR TRACK</p><h3>「勉強した感」を、積み上げで見える化</h3><p>集中タイマーの正味時間だけを記録。画面を閉じた時間は水増ししない。</p></div><strong>{studyProgress.percent.toFixed(studyProgress.percent < 10 ? 1 : 0)}<small>%</small></strong></div>
-          <div className="study-progress-bar" role="progressbar" aria-label={`700時間中${studyProgress.studiedHours.toFixed(1)}時間、${studyProgress.percent.toFixed(1)}パーセント`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={studyProgress.percent}><i style={{ width: `${studyProgress.percent}%` }} /></div>
-          <div className="study-progress-foot"><span>{formatStudyAmount(liveStudySeconds)} / 700時間</span><span>{milestoneRemainingSeconds ? `次の節目まで ${formatTime(milestoneRemainingSeconds)}` : "700時間の節目を達成"}</span></div>
-        </section>
+        {recentRecords.length > 0 && (
+          <section className="panel-card record-strip">
+            <div className="section-heading" style={{ marginBottom: 0 }}><div><p className="eyebrow">RECENT RECORDS</p><h3>最近の記録</h3></div><button className="text-button" type="button" onClick={() => setActiveTab("records")}>すべて見る →</button></div>
+            <ul className="record-list-mini">
+              {recentRecords.map((record) => <li key={record.id}><span>{record.material}</span><strong>{record.score}/{record.maxScore}（{Math.round(record.score / record.maxScore * 100)}%）</strong></li>)}
+            </ul>
+          </section>
+        )}
 
         <section className="focus-strip panel-card"><div><p className="eyebrow accent">{focusRunning ? "LEARNING NOW" : "FOCUS MODE"}</p><h3>{focusRunning ? `計測中 ${formatTime(focusSeconds)}` : "短く集中して、記録を残す"}</h3><p>{focusRunning ? "画面を閉じても復帰できます。選んだ時間で自動終了し、途中でSTOPもできます。" : "3・10・20分から選んでSTART。時間が来ると自動終了し、学習時間とスマホを置いた時間が残ります。"}</p></div><button className="button button-secondary" onClick={() => setFocusOpen(true)}>{focusRunning ? "タイマーを見る" : "START"} <span>↗</span></button></section>
+      </div>
+    );
+  }
+
+  function renderSubjects() {
+    if (selectedUnit) return renderUnitDetail(selectedUnit);
+    if (selectedSubject) return renderSubjectDetail(selectedSubject);
+    return (
+      <div className="page-stack">
+        <div className="page-heading"><div><p className="eyebrow accent">ALL SUBJECTS</p><h2>9科目の全体地図</h2><p>各科目の推定得点率と単元進捗。未診断の科目はまず10〜20分の診断から。</p></div></div>
+        <div className="subject-grid">
+          {SUBJECTS.map((subject) => {
+            const units = unitsBySubject.get(subject.id) ?? [];
+            const learned = units.filter((unit) => (osState.unitStates[unit.id]?.level ?? 0) >= 3).length;
+            const pct = Math.round(subjectEstimate(subject.id, osState) * 100);
+            const diagnosed = Boolean(osState.diagnosticsDone[subject.id]);
+            return (
+              <button key={subject.id} type="button" className="subject-card panel-card" onClick={() => setSubjectViewId(subject.id)}>
+                <div className="subject-card-head"><strong>{subject.label}</strong><span className={`diag-badge ${diagnosed ? "done" : ""}`}>{diagnosed ? "診断済" : "未診断"}</span></div>
+                <div className="subject-card-body">
+                  <div className="subject-pct"><strong>{pct}<small>%</small></strong><span>推定得点率</span></div>
+                  <div className="mini-bar" role="progressbar" aria-label={`${subject.label}の推定得点率`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}><i style={{ width: `${pct}%` }} /></div>
+                  <p>{learned}/{units.length}単元習得・{subject.note}</p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <section className="panel-card note-card"><p>数学は「マップ」タブで320概念の依存グラフとして管理されています。ここでは数学以外の科目を扱います。</p></section>
+      </div>
+    );
+  }
+
+  function renderSubjectDetail(subject: NonNullable<typeof selectedSubject>) {
+    const units = unitsBySubject.get(subject.id) ?? [];
+    const pct = Math.round(subjectEstimate(subject.id, osState) * 100);
+    const diagnosed = Boolean(osState.diagnosticsDone[subject.id]);
+    return (
+      <div className="page-stack">
+        <div className="page-heading">
+          <div><button className="text-button" type="button" onClick={() => setSubjectViewId(null)}>← 科目一覧</button><p className="eyebrow accent">{subject.slotLabel}</p><h2>{subject.label}</h2><p>{subject.note}</p></div>
+          <div className="map-count"><strong>{pct}%</strong><span>推定得点率</span></div>
+        </div>
+        {!diagnosed && (
+          <section className="panel-card diag-cta"><div><p className="eyebrow accent">DIAGNOSTIC</p><h3>まず10分の診断で穴を特定</h3><p>各単元の代表問題に答えるだけで、履修済み/未履修を自動で判定します。</p></div><button className="button button-primary" type="button" onClick={() => startOsDiagnostic(subject.id)}>診断を開始 →</button></section>
+        )}
+        {diagnosticSubjectId === subject.id && diagnosticList.length > 0 && renderDiagnostic()}
+        <section className="concept-list">
+          {units.map((unit) => {
+            const state = osState.unitStates[unit.id];
+            const level = state?.level ?? 0;
+            const due = Boolean(state?.dueAt && Date.parse(state.dueAt) <= osNowMs && level >= 1);
+            return (
+              <div className="concept-item" key={unit.id}>
+                <button className="concept-row-main" type="button" onClick={() => openUnit(unit)}>
+                  <span className="concept-id">{unit.id.split("-")[1]}</span>
+                  <span className="concept-name">{unit.title}</span>
+                  <span className="concept-course">{unit.estimatedMinutes}分</span>
+                  <span className="mastery-dots" aria-label={`習得度 ${level}/4`}>{[1, 2, 3, 4].map((i) => <i className={i <= level ? "filled" : ""} key={i} />)}</span>
+                  <span className={`state-label ${due ? "ready" : ""}`}>{level === 0 ? "未履修" : due ? "復習" : level >= 4 ? "定着" : `Lv${level}`}</span>
+                  <span className="chevron" aria-hidden="true">›</span>
+                </button>
+              </div>
+            );
+          })}
+        </section>
+      </div>
+    );
+  }
+
+  function renderDiagnostic() {
+    const entry = diagnosticList[diagnosticIndex];
+    if (!entry || !diagnosticSubjectId) return null;
+    const answered = diagnosticAnswers[entry.problem.id];
+    return (
+      <section className="panel-card diagnostic-card">
+        <div className="section-heading"><div><p className="eyebrow accent">DIAGNOSTIC {diagnosticIndex + 1}/{diagnosticList.length}</p><h3>{entry.unitTitle}</h3></div></div>
+        <p className="question-prompt">{entry.problem.prompt}</p>
+        <div className="option-list">
+          {entry.problem.options.map((option, index) => (
+            <button key={index} type="button" className={`option-button ${answered === index ? "chosen" : ""}`} disabled={answered !== undefined} onClick={() => answerDiagnostic(index)}>
+              <span className="option-key">{String.fromCharCode(65 + index)}</span><span>{option}</span>
+            </button>
+          ))}
+        </div>
+        <p className="quiet-label">回答すると即座に次へ進みます。直感でOK。</p>
+      </section>
+    );
+  }
+
+  function renderUnitDetail(unit: OsUnit) {
+    const state = osState.unitStates[unit.id] ?? { level: 0, attempts: 0, correct: 0 };
+    const lesson = unit.lesson;
+    const isPractice = unitStep === "practice" && currentUnitProblem;
+    return (
+      <div className="page-stack">
+        <div className="page-heading">
+          <div><button className="text-button" type="button" onClick={() => setOpenUnitId(null)}>← {SUBJECT_BY_ID.get(unit.subjectId)?.label ?? "科目"}</button><p className="eyebrow accent">{SUBJECT_BY_ID.get(unit.subjectId)?.shortLabel} / 約{unit.estimatedMinutes}分</p><h2>{unit.title}</h2></div>
+          <div className="map-count"><strong>Lv{state.level}</strong><span>{state.attempts}問解答</span></div>
+        </div>
+        {!isPractice && (
+          <section className="panel-card lesson-hero">
+            <div className="lesson-grid">
+              <article className="lesson-block"><p className="eyebrow">30秒で要点</p><p>{lesson.summary}</p>{lesson.intuition && <p className="lesson-intuition">{lesson.intuition}</p>}</article>
+              <article className="lesson-block"><p className="eyebrow">具体例</p><p>{lesson.example}</p></article>
+              {lesson.examSignal && <article className="lesson-block accent"><p className="eyebrow accent">共テでの出方</p><p>{lesson.examSignal}</p></article>}
+            </div>
+            {unitStep === "overview" && <button className="button button-primary" type="button" onClick={() => setUnitStep("worked")}>例題で確認 →</button>}
+          </section>
+        )}
+        {!isPractice && unitStep === "worked" && (
+          <section className="panel-card lesson-hero">
+            <article className="lesson-block"><p className="eyebrow">WORKED EXAMPLE</p><h3>{lesson.workedExample.problem}</h3><ol className="lesson-steps">{lesson.workedExample.steps.map((step, i) => <li key={i}>{step}</li>)}</ol><p className="lesson-answer">答え: {lesson.workedExample.answer}</p></article>
+            {lesson.commonMistakes && lesson.commonMistakes.length > 0 && <article className="lesson-block"><p className="eyebrow">よくあるミス</p><ul className="lesson-mistakes">{lesson.commonMistakes.map((m, i) => <li key={i}>{m}</li>)}</ul></article>}
+            <button className="button button-primary" type="button" onClick={() => { setUnitStep("practice"); setUnitProblemIndex(0); setUnitAnswer(null); setUnitFeedback(null); }}>小問を解く →</button>
+          </section>
+        )}
+        {isPractice && currentUnitProblem && (
+          <section className="panel-card question-card">
+            <div className="question-top"><p className="eyebrow">PRACTICE {unitProblemIndex + 1}/{unit.problems.length}</p><span className="tag">{currentUnitProblem.kind === "quick" ? "確認" : currentUnitProblem.kind === "standard" ? "標準" : "転用"}</span></div>
+            <h3 className="question-prompt">{currentUnitProblem.prompt}</h3>
+            <div className="option-list">
+              {currentUnitProblem.options.map((option, index) => {
+                const picked = unitAnswer === index;
+                const revealed = unitFeedback !== null;
+                const isAnswer = index === currentUnitProblem.answer;
+                return (
+                  <button key={index} type="button" className={`option-button ${picked ? "chosen" : ""} ${revealed && isAnswer ? "correct-option" : ""} ${revealed && picked && !isAnswer ? "wrong-option" : ""}`} disabled={revealed} onClick={() => setUnitAnswer(index)}>
+                    <span className="option-key">{String.fromCharCode(65 + index)}</span><span>{option}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {unitFeedback === null ? (
+              <div className="question-actions"><button className="button button-primary" type="button" disabled={unitAnswer === null} onClick={submitUnitAnswer}>採点する</button></div>
+            ) : (
+              <div className={`feedback-box ${unitFeedback.correct ? "good" : "bad"}`}>
+                <p><strong>{unitFeedback.correct ? "正解" : "不正解"}</strong>　{unitFeedback.note && <span>その選択肢のポイント: {unitFeedback.note}</span>}</p>
+                <p>{currentUnitProblem.explanation}</p>
+                {!unitFeedback.correct && (
+                  <div className="error-cause-picker">
+                    <p className="quiet-label">間違えた原因を選ぶ（復習の質を上げる）</p>
+                    <div className="filter-row">{["知識がなかった", "読み違えた", "手順を間違えた", "ケアレスミス"].map((cause) => <button key={cause} type="button" className={`filter-chip ${unitErrorCause === cause ? "selected" : ""}`} onClick={() => chooseUnitErrorCause(cause)}>{cause}</button>)}</div>
+                  </div>
+                )}
+                <div className="question-actions"><button className="button button-secondary" type="button" onClick={advanceUnitProblem}>{unitProblemIndex >= unit.problems.length - 1 ? "単元を閉じる" : "次の小問 →"}</button></div>
+              </div>
+            )}
+          </section>
+        )}
+      </div>
+    );
+  }
+
+  function renderRecords() {
+    const slotLabel = (slotId: string) => SCORE_SLOTS.find((slot) => slot.id === slotId)?.label ?? SUBJECT_BY_ID.get(slotId as LearningSubjectId)?.shortLabel ?? slotId;
+    const groups = new Map<string, { label: string; entries: typeof osState.records }>();
+    for (const record of osState.records) {
+      const label = slotLabel(record.slotId);
+      const group = groups.get(label) ?? { label, entries: [] as typeof osState.records };
+      group.entries.push(record);
+      groups.set(label, group);
+    }
+    const grouped = [...groups.values()];
+    const allSeries = [...osState.records].sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
+    const maxPct = Math.max(1, ...allSeries.map((entry) => entry.score / entry.maxScore * 100));
+    return (
+      <div className="page-stack">
+        <div className="page-heading">
+          <div><p className="eyebrow accent">MOCK / PAST EXAM LOG</p><h2>模試・過去問の記録</h2><p>科目別に点数と得点率を残す。1回の低い点数で見通しは下げません（直近3件の平均）。</p></div>
+          <button className="button button-primary" type="button" onClick={() => setRecordFormOpen((open) => !open)}>{recordFormOpen ? "閉じる" : "記録を追加"}</button>
+        </div>
+        {recordFormOpen && <RecordForm onAdd={addRecord} />}
+        {allSeries.length > 0 && (
+          <section className="panel-card">
+            <p className="eyebrow">TIMELINE</p>
+            <div className="record-chart" role="img" aria-label="記録の時系列">
+              {allSeries.slice(-20).map((record) => {
+                const pct = Math.round(record.score / record.maxScore * 100);
+                return <div className="record-bar" key={record.id} style={{ height: `${Math.max(4, Math.round((pct / Math.max(100, maxPct)) * 100))}%` }} title={`${record.material} ${record.score}/${record.maxScore}（${pct}%）`} />;
+              })}
+            </div>
+            <p className="quiet-label">棒の高さ=得点率。ホバーで教材・点数を表示。</p>
+          </section>
+        )}
+        {grouped.length === 0 && <section className="panel-card empty-state"><p>まだ記録がありません。模試や過去問を解いたら「記録を追加」から残してください。</p></section>}
+        {grouped.map(({ label, entries }) => (
+          <section className="panel-card" key={label}>
+            <div className="section-heading"><div><p className="eyebrow">{label}</p><h3>{entries.length}件</h3></div><span className="quiet-label">最新 {entries[0] ? Math.round(entries[0].score / entries[0].maxScore * 100) : 0}%</span></div>
+            <ul className="record-list">
+              {entries.map((record) => (
+                <li key={record.id}>
+                  <span>{new Date(record.date).toLocaleDateString("ja-JP")}</span>
+                  <span>{record.material}</span>
+                  <strong>{record.score}/{record.maxScore}</strong>
+                  <span>{Math.round(record.score / record.maxScore * 100)}%</span>
+                  {record.minutes && <span>{record.minutes}分</span>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
+    );
+  }
+
+  function renderUniversities() {
+    const plan = UNIVERSITIES.find((entry) => entry.id === uniPicker) ?? UNIVERSITIES[0];
+    const science2 = osState.scienceChoice ?? "bio";
+    const social2 = osState.socialChoice ?? "world";
+    const pct: Record<string, number> = {
+      kokugo: Math.round((subjectEstimate("modern", osState) * 100 + subjectEstimate("kobun", osState) * 100 + subjectEstimate("kanbun", osState) * 100) / 3 * 1.2),
+      "math-ia": Math.round(mathEstimate.ia * 100),
+      "math-iibc": Math.round(mathEstimate.iibc * 100),
+      "eng-r": Math.round(subjectEstimate("eng-r", osState) * 100),
+      "eng-l": Math.round(subjectEstimate("eng-l", osState) * 100),
+      info: Math.round(subjectEstimate("info", osState) * 100),
+      physics: Math.round(subjectEstimate("physics", osState) * 100),
+      bio: Math.round(subjectEstimate("bio", osState) * 100),
+      chem: Math.round(subjectEstimate("chem", osState) * 100),
+      seikei: Math.round(subjectEstimate("seikei", osState) * 100),
+      world: Math.round(subjectEstimate("world", osState) * 100),
+      geo: Math.round(subjectEstimate("geo", osState) * 100),
+    };
+    const converted = convertedScore(plan, pct, science2, social2);
+    const marginal = bestMarginalSubject(plan, pct, science2, social2);
+    return (
+      <div className="page-stack">
+        <div className="page-heading"><div><p className="eyebrow accent">UNIVERSITY SIMULATOR</p><h2>志望校の配点換算</h2><p>2027年度公式情報に基づく共テ配点への換算。合格判定ではなく「あと10点上げるならどの科目が効率的か」を見ます。</p></div></div>
+        <section className="panel-card">
+          <p className="eyebrow">PLAN</p>
+          <div className="filter-row" role="group" aria-label="大学・方式を選択">
+            {UNIVERSITIES.map((entry) => <button key={entry.id} type="button" className={`filter-chip ${uniPicker === entry.id ? "selected" : ""}`} onClick={() => setUniPicker(entry.id)}>{entry.name.replace("大学", "")} {entry.track}</button>)}
+          </div>
+        </section>
+        <section className="hero-card">
+          <div className="hero-copy">
+            <p className="eyebrow accent">{plan.name} {plan.faculty}</p>
+            <h2>{plan.track} 共テ換算 <span className="hero-days">{converted.total}</span> / {converted.max}点</h2>
+            <p className="hero-description">全体満点 {plan.totalPoints}点（共テ{plan.ctWeight}+個別{plan.individualWeight}）。{plan.individualNotes}</p>
+            {marginal && <p className="hero-description">あと10%pt上げるなら「{SUBJECT_BY_ID.get(marginal.slot as LearningSubjectId)?.shortLabel ?? SCORE_SLOTS.find((s) => s.id === marginal.slot)?.label ?? marginal.slot}」が最も換算点が増えます（+{marginal.gainPoints}点）。</p>}
+          </div>
+          <div className="coverage-orb" style={{ background: `conic-gradient(var(--lime) ${Math.min(100, Math.round(converted.total / converted.max * 100))}%, var(--line) 0)` }}>
+            <div className="orb-inner"><strong>{Math.round(converted.total / converted.max * 100)}%</strong><span>共テ換算</span></div>
+          </div>
+        </section>
+        <section className="panel-card">
+          <div className="section-heading"><div><p className="eyebrow">COMMON TEST BREAKDOWN</p><h3>科目別の換算内訳</h3></div><span className="quiet-label">現在の推定値を使用</span></div>
+          <ul className="uni-list">
+            {converted.details.map((detail) => {
+              const rawSlot = detail.slot.replace(/（選択）$/, "");
+              const baseLabel = SCORE_SLOTS.find((s) => s.id === rawSlot)?.label
+                ?? SUBJECT_BY_ID.get((rawSlot === "science2" ? science2 : rawSlot === "social2" ? social2 : rawSlot) as LearningSubjectId)?.shortLabel
+                ?? rawSlot;
+              const resolvedNote = rawSlot === "science2" && science2 === "bio" ? "（生物）" : rawSlot === "science2" && science2 === "chem" ? "（化学）" : rawSlot === "social2" && social2 === "world" ? "（世界史）" : rawSlot === "social2" && social2 === "geo" ? "（地理）" : "";
+              return (
+              <li key={detail.slot}>
+                <span>{baseLabel}{resolvedNote}{detail.slot.endsWith("（選択）") ? "・選択" : ""}</span>
+                <span>{detail.points}点満点</span>
+                <strong>{detail.earned}点</strong>
+                <div className="mini-bar" style={{ width: 90 }}><i style={{ width: `${Math.min(100, Math.round(detail.earned / detail.points * 100))}%` }} /></div>
+              </li>
+              );
+            })}
+          </ul>
+          <ul className="uni-notes">
+            {plan.notes.map((note, i) => <li key={i}>{note}</li>)}
+            {plan.math3Needed && <li>個別試験に数Ⅲを含む（共テ後の対策）</li>}
+          </ul>
+        </section>
+        <section className="panel-card">
+          <div className="section-heading"><div><p className="eyebrow">SUBJECT CHOICE</p><h3>出願科目の選択</h3></div></div>
+          <div className="choice-row">
+            <span>第2理科:</span>
+            {(["bio", "chem"] as const).map((id) => <button key={id} type="button" className={`filter-chip ${science2 === id ? "selected" : ""}`} onClick={() => updateOs((draft) => ({ ...draft, scienceChoice: id }))}>{id === "bio" ? "生物" : "化学"}</button>)}
+            <span>第2社会:</span>
+            {(["world", "geo"] as const).map((id) => <button key={id} type="button" className={`filter-chip ${social2 === id ? "selected" : ""}`} onClick={() => updateOs((draft) => ({ ...draft, socialChoice: id }))}>{id === "world" ? "世界史" : "地理"}</button>)}
+          </div>
+        </section>
       </div>
     );
   }
@@ -1597,7 +2121,7 @@ export default function Home() {
           <article className="setting-card panel-card"><div><p className="eyebrow">IOS START</p><h3>ホーム画面に追加</h3><p>Safariの共有ボタンから「ホーム画面に追加」。追加後もオフラインで使えます。</p></div><span className="setting-hint">Safari → 共有 → 追加</span></article>
           <article className="setting-card panel-card danger-card"><div><p className="eyebrow">RESET</p><h3>最初からやり直す</h3><p>概念の到達度と正答履歴を消去する。</p></div><button className="button button-danger" type="button" onClick={resetData}>記録を消去</button></article>
         </section>
-        <section className="about-card panel-card"><div className="about-mark">Σ</div><div><p className="eyebrow">ABOUT THIS BUILD</p><h3>共テ数学60 / v0.6 · 4X CONTENT BUILD</h3><p>高校数学 I・A・II・B・C・III を320概念に分解したローカルファーストPWA。共テ幹線{commonTestConcepts.length}概念と橋渡し21概念に{lessonModules.length}本の本編レッスン、{Object.keys(conceptGuides).length}件の短編ガイド、{problemBank.length}問を接続し、外部教材なしで「解説 → 例題 → 確認問題」へ進める。</p></div></section>
+        <section className="about-card panel-card"><div className="about-mark">Σ</div><div><p className="eyebrow">ABOUT THIS BUILD</p><h3>受験OS / 2027共通テスト対応</h3><p>数学I・A・II・B・C・IIIを320概念に分解したローカルファーストPWAに、情報Ⅰ・公共政経・物理・古文・漢文・英語・生物・化学・世界史・地理の{allUnits.length}単元を追加した9科目統合版。TODAY画面で残日数・推定得点率・最優先タスクを一元管理し、記録・志望校シミュレーターで全体を見渡せる。データは端末内に保存、JSONで書き出し可能。</p></div></section>
       </div>
     );
   }
@@ -1606,16 +2130,19 @@ export default function Home() {
 
   const tabItems: Array<{ id: Tab; label: string; icon: string }> = [
     { id: "today", label: "今日", icon: "⌂" },
-    { id: "map", label: "マップ", icon: "⌘" },
+    { id: "subjects", label: "科目", icon: "◈" },
+    { id: "map", label: "数学", icon: "⌘" },
     { id: "practice", label: "演習", icon: "✦" },
     { id: "mock", label: "模試", icon: "◫" },
+    { id: "records", label: "記録", icon: "▤" },
+    { id: "universities", label: "志望校", icon: "◎" },
     { id: "settings", label: "設定", icon: "⚙" },
   ];
 
   return (
     <main className="app-shell">
-      <header className="topbar"><div className="brand"><div className="brand-mark">Σ</div><div><p className="brand-kicker">COMMON TEST / MATH</p><h1>共テ数学60</h1></div></div><div className="topbar-right"><span className={`offline-pill ${isOnline ? "online" : "offline"}`}><i /><span className="online-label">{isOnline ? "オンライン / オフライン対応" : "オフライン中"}</span><span className="compact-label">{isOnline ? "利用可能" : "オフライン"}</span></span><button className="icon-button" type="button" aria-label="テーマ切替" onClick={() => setIsDark((value) => !value)}>{isDark ? "☼" : "◐"}</button></div></header>
-      <div className="workspace"><nav className="sidebar" aria-label="メインナビゲーション">{tabItems.map((item) => <button className={`nav-item ${activeTab === item.id ? "active" : ""}`} type="button" aria-current={activeTab === item.id ? "page" : undefined} key={item.id} onClick={() => setActiveTab(item.id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span>{item.label}</span>{item.id === "practice" && totalAttempts > 0 && <i className="nav-dot" aria-hidden="true" />}</button>)}<div className="sidebar-bottom"><p>教材バンク</p><strong>{problemBank.length}</strong><span>{lessonModules.length}本編 / {Object.keys(conceptGuides).length}ガイド</span></div></nav><section className="main-content">{activeTab === "today" && renderToday()}{activeTab === "map" && renderMap()}{activeTab === "practice" && renderPractice()}{activeTab === "mock" && renderMock()}{activeTab === "settings" && renderSettings()}</section></div>
+      <header className="topbar"><div className="brand"><div className="brand-mark">Σ</div><div><p className="brand-kicker">COMMON TEST 2027</p><h1>受験OS</h1></div></div><div className="topbar-right"><span className={`offline-pill ${isOnline ? "online" : "offline"}`}><i /><span className="online-label">{isOnline ? "オンライン / オフライン対応" : "オフライン中"}</span><span className="compact-label">{isOnline ? "利用可能" : "オフライン"}</span></span><button className="icon-button" type="button" aria-label="テーマ切替" onClick={() => setIsDark((value) => !value)}>{isDark ? "☼" : "◐"}</button></div></header>
+      <div className="workspace"><nav className="sidebar" aria-label="メインナビゲーション">{tabItems.map((item) => <button className={`nav-item ${activeTab === item.id ? "active" : ""}`} type="button" aria-current={activeTab === item.id ? "page" : undefined} key={item.id} onClick={() => setActiveTab(item.id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span>{item.label}</span>{item.id === "practice" && totalAttempts > 0 && <i className="nav-dot" aria-hidden="true" />}</button>)}<div className="sidebar-bottom"><p>教材バンク</p><strong>{problemBank.length}</strong><span>{lessonModules.length}本編 / {Object.keys(conceptGuides).length}ガイド</span></div></nav><section className="main-content">{activeTab === "today" && renderToday()}{activeTab === "subjects" && renderSubjects()}{activeTab === "map" && renderMap()}{activeTab === "practice" && renderPractice()}{activeTab === "mock" && renderMock()}{activeTab === "records" && renderRecords()}{activeTab === "universities" && renderUniversities()}{activeTab === "settings" && renderSettings()}</section></div>
       {focusRunning && <button className="focus-running" type="button" aria-label={`集中タイマー ${formatTime(focusSeconds)}。詳細を開く`} onClick={() => setFocusOpen(true)}><span className="pulse-dot" />FOCUS <strong aria-live="polite" aria-atomic="true">{formatTime(focusSeconds)}</strong></button>}
       {focusOpen && <div className="modal-backdrop" role="presentation"><section ref={focusModalRef} className="focus-modal" role="dialog" aria-modal="true" aria-labelledby="focus-title" aria-describedby="focus-description"><button ref={modalCloseRef} className="modal-close" type="button" onClick={() => setFocusOpen(false)} aria-label="閉じる">×</button><p className="eyebrow accent">FOCUS MODE</p>{focusRunning ? <><h2 id="focus-title">計測中。画面は閉じてOK。</h2><p id="focus-description">選んだ時間で自動終了します。途中でSTOPもでき、画面を離れた時間は別に記録します。</p><div className="focus-live"><strong aria-live="polite" aria-atomic="true">{formatTime(focusSeconds)}</strong><span>経過時間</span><small>{studySession ? `スマホを置いた時間 ${formatTime(sessionAwaySeconds(studySession, currentTime()))}` : ""}</small></div><div className="hero-actions"><button className="button button-secondary" type="button" onClick={() => setFocusOpen(false)}>戻る</button><button className="button button-danger" type="button" onClick={stopFocus}>STOPして記録</button></div></> : <><h2 id="focus-title">まずSTART。時間を選ぶ。</h2><p id="focus-description">3・10・20分から選べます。時間が来ると自動終了し、途中でSTOPしたときも今日の証拠になります。</p><div className="duration-grid">{[3, 10, 20].map((minutes) => <button key={minutes} type="button" className={`duration-button ${focusTotalSeconds === minutes * 60 ? "selected" : ""}`} onClick={() => { setFocusTotalSeconds(minutes * 60); setFocusSeconds(0); }}><strong>{minutes}</strong><span>min</span></button>)}</div><div className="focus-noise"><div><strong>ピンクノイズ</strong><span>{noiseOn ? "再生中" : "オフ"}</span></div><button className="toggle-button" type="button" aria-pressed={noiseOn} onClick={toggleNoise}><span className={noiseOn ? "toggle-knob on" : "toggle-knob"} /><span>{noiseOn ? "On" : "Off"}</span></button></div><button className="button button-primary wide" type="button" onClick={beginFocus}>STARTする <span>→</span></button></>}</section></div>}
       {sessionSummary && <div className="modal-backdrop" role="presentation"><section ref={summaryModalRef} className="summary-modal" role="dialog" aria-modal="true" aria-labelledby="summary-title" aria-describedby="summary-description"><button ref={summaryCloseRef} className="modal-close" type="button" onClick={() => setSessionSummary(null)} aria-label="閉じる">×</button><p className="eyebrow accent">SESSION COMPLETE</p><h2 id="summary-title">積み上げを記録した。</h2><p id="summary-description">今日は画面を見ていた時間ではなく、正味の集中時間だけを進捗に加えました。</p><div className="summary-numbers"><div><strong>{formatTime(sessionSummary.studySeconds)}</strong><span>正味集中</span></div><div><strong>{formatTime(sessionSummary.awaySeconds)}</strong><span>スマホを置いた時間</span></div></div>{sessionEvidence && <div className="session-evidence"><div><strong>{sessionEvidence.questions}</strong><span>解いた問題</span></div><div><strong>{Math.max(0, sessionEvidence.routeEnd - sessionEvidence.routeStart)}</strong><span>進んだ概念</span></div><div><strong>{sessionEvidence.routeStart} → {sessionEvidence.routeEnd}</strong><span>ルート</span></div></div>}<p className="summary-reassurance">進捗は戻りません。次は1問だけでOK。</p><button className="button button-primary wide" type="button" onClick={continueToNextPractice}>次の1問へ <span>→</span></button></section></div>}
