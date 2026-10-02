@@ -1,0 +1,18 @@
+# kyotemath (受験OS) — Node >=22.13 前提のvinext/Vite PWA
+maintenance: |
+  npm install
+knowledge:
+  - name: lint
+    contents: |
+      npm run lint  # eslint（ベースラインはクリーン）
+      npx tsc --noEmit  # 型チェック
+  - name: test
+    contents: |
+      npm test  # 監査7本 + vinext build + node --test tests/*.test.mjs
+  - name: build
+    contents: |
+      npm run build         # scripts/build-verified.sh (vinext)
+      npm run build:github  # dist-static 静的PWA出力
+  - name: notes
+    contents: |
+      永続化キー kyote-math-60:* は壊さない。受験OS状態は kyote-os:state。
