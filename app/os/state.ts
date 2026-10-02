@@ -136,9 +136,9 @@ export function mergeOsState(local: OsState, incoming: OsState): OsState {
   };
 }
 
-// 復習スケジュール（当日/翌日/3日後/7日後）
-export function nextReviewDue(isoNow: string, kind: "wrong" | "ok"): string {
+// 復習スケジュール（不正解→翌日、定着中→3日後、Lv4遅延復習済→7日後）
+export function nextReviewDue(isoNow: string, kind: "wrong" | "ok" | "done"): string {
   const now = Date.parse(isoNow);
-  const hours = kind === "wrong" ? 24 : 72;
+  const hours = kind === "wrong" ? 24 : kind === "ok" ? 72 : 168;
   return new Date(now + hours * 3600 * 1000).toISOString();
 }
