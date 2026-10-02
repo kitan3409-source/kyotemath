@@ -44,9 +44,9 @@ export function subjectEstimate(subjectId: LearningSubjectId, osState: OsState):
     return sum + (Math.min(4, level) / 4) * unit.weight;
   }, 0);
   const contentScore = totalWeight > 0 ? achieved / totalWeight : 0;
-  // 記録スコア（直近3件の平均）
+  // 記録スコア（直近3件の平均）。科目名で記録しても集約slotで記録しても拾う。
   const slotId = SCORE_SLOTS.find((slot) => slot.subjects.includes(subjectId))?.id;
-  const recentRecords = (slotId ? osState.records.filter((record) => record.slotId === slotId) : [])
+  const recentRecords = osState.records.filter((record) => record.slotId === subjectId || (slotId !== undefined && record.slotId === slotId))
     .sort((a, b) => Date.parse(b.date) - Date.parse(a.date))
     .slice(0, 3);
   const recordScore = recentRecords.length > 0
@@ -114,11 +114,12 @@ export function buildPlan(minutes: number, osState: OsState, mathNextUnitId?: st
     subjectMinutes[unit.subjectId] = (subjectMinutes[unit.subjectId] ?? 0) + min;
   }
 
-  // 数学タスク（既存エンジンの次の概念）
+  // 数学タスク（既存エンジンの次の概念）。非数学の候補があるときはその分を残す。
   if (mathNextUnitId && tasks.length < 3) {
     const remaining = minutes - tasks.reduce((s, t) => s + t.minutes, 0);
-    if (remaining >= 10) {
-      tasks.push({ id: `math-${mathNextUnitId}`, kind: "learn", unitId: mathNextUnitId, label: `数学: ${mathNextLabel ?? mathNextUnitId}`, minutes: Math.min(30, remaining), reason: "優先度高" });
+    const mathMinutes = Math.min(30, fresh.length > 0 ? Math.max(10, remaining - 12) : remaining);
+    if (mathMinutes >= 10 && remaining >= 10) {
+      tasks.push({ id: `math-${mathNextUnitId}`, kind: "learn", unitId: mathNextUnitId, label: `数学: ${mathNextLabel ?? mathNextUnitId}`, minutes: mathMinutes, reason: "優先度高" });
     }
   }
 

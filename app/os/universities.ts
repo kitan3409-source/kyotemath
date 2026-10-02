@@ -17,24 +17,43 @@ export type UniversityPlan = {
   notes: string[];
 };
 
+// 高得点選択を持つ擬似slot: 該当科目のうち最も高い推定得点率(0-100)を採用。
+// science2/social2 はユーザーが志望校タブで選んだ科目、それ以外は公式の高得点ルール。
+export function resolveSlotPct(slot: string, pct: Record<string, number>, science2: ScienceChoice, social2: SocialChoice): number {
+  switch (slot) {
+    case "science2": return pct[science2] ?? 0;
+    case "social2": return pct[social2] ?? 0;
+    case "science-best": return Math.max(pct.physics ?? 0, pct.bio ?? 0, pct.chem ?? 0);
+    case "seikei-or-info": return Math.max(pct.seikei ?? 0, pct.info ?? 0);
+    case "kokugo-or-science": return Math.max(pct.kokugo ?? 0, pct.physics ?? 0, pct.bio ?? 0, pct.chem ?? 0);
+    default: return pct[slot] ?? 0;
+  }
+}
+
+// slot表示名（擬似slot含む）
+export function slotDisplayName(slot: string): string | undefined {
+  switch (slot) {
+    case "science-best": return "理科（高得点採用）";
+    case "seikei-or-info": return "地歴公民/情報Ⅰ（高得点）";
+    case "kokugo-or-science": return "国語/理科（高得点）";
+    default: return undefined;
+  }
+}
+
 // 共テ slotId -> 換算点。ユーザー入力は各slotの得点率(0-100)。
+// 科目配点の合計がctWeightを超える大学（例: 香川925→900）は公式通り比例圧縮する。
 export function convertedScore(plan: UniversityPlan, pct: Record<string, number>, science2: ScienceChoice, social2: SocialChoice) {
+  const rawMax = plan.ctSubjects.reduce((sum, s) => sum + s.points, 0);
+  const scale = rawMax > 0 ? Math.min(1, plan.ctWeight / rawMax) : 1;
   let total = 0;
   const details: { slot: string; points: number; earned: number }[] = [];
   for (const s of plan.ctSubjects) {
-    const resolved = resolveSlot(s.slot, science2, social2);
-    const p = pct[resolved] ?? 0;
-    const earned = (p / 100) * s.points;
+    const p = resolveSlotPct(s.slot, pct, science2, social2);
+    const earned = (p / 100) * s.points * scale;
     total += earned;
     details.push({ slot: `${s.slot}${s.required ? "" : "（選択）"}`, points: s.points, earned: Math.round(earned) });
   }
-  return { total: Math.round(total), max: plan.ctWeight, details };
-}
-
-function resolveSlot(slot: string, science2: ScienceChoice, social2: SocialChoice) {
-  if (slot === "science2") return science2;
-  if (slot === "social2") return social2;
-  return slot;
+  return { total: Math.round(total), max: plan.ctWeight, rawMax, scale, details };
 }
 
 export const UNIVERSITIES: UniversityPlan[] = [
@@ -47,7 +66,7 @@ export const UNIVERSITIES: UniversityPlan[] = [
     ctSubjects: [
       { slot: "math-ia", points: 100, required: true, note: "数ⅠA" },
       { slot: "math-iibc", points: 100, required: true, note: "数ⅡBC" },
-      { slot: "physics", points: 200, required: true, note: "物/化/生から1科目（高得点利用）" },
+      { slot: "science-best", points: 200, required: true, note: "物/化/生から1科目（高得点利用）" },
       { slot: "info", points: 200, required: true },
       { slot: "eng-r", points: 160, required: true },
       { slot: "eng-l", points: 40, required: true },
@@ -165,8 +184,7 @@ export const UNIVERSITIES: UniversityPlan[] = [
     totalPoints: 1300, ctWeight: 900, individualWeight: 400,
     ctSubjects: [
       { slot: "kokugo", points: 200, required: true },
-      { slot: "seikei", points: 100, required: true, note: "地歴公民と情報Ⅰの高得点を利用" },
-      { slot: "info", points: 100, required: true },
+      { slot: "seikei-or-info", points: 100, required: true, note: "地歴公民と情報Ⅰの高得点を採用" },
       { slot: "math-ia", points: 100, required: true },
       { slot: "math-iibc", points: 100, required: true },
       { slot: "physics", points: 100, required: true, note: "理2科目（基礎4[除地学基礎]or物/化/生）" },
@@ -185,27 +203,28 @@ export const UNIVERSITIES: UniversityPlan[] = [
     track: "後期",
     totalPoints: 900, ctWeight: 900, individualWeight: 0,
     ctSubjects: [
-      { slot: "kokugo", points: 200, required: true, note: "国語と理科の高得点" },
+      { slot: "kokugo-or-science", points: 200, required: true, note: "国語と理科（物/化/生の高得点）の高い方" },
       { slot: "info", points: 100, required: true },
       { slot: "math-ia", points: 200, required: true, note: "数学は2倍換算" },
       { slot: "math-iibc", points: 200, required: true },
-      { slot: "physics", points: 100, required: true, note: "理1科目（物/化/生）" },
       { slot: "eng-r", points: 160, required: true },
       { slot: "eng-l", points: 40, required: true },
     ],
     individualNotes: "個別なし",
     math3Needed: false,
-    notes: ["共テのみ（後期）", "数学の比重が大きい（2倍）"],
+    notes: ["共テのみ（後期）", "数学の比重が大きい（2倍）", "理科は受験必須だが得点は国語との高得点採用"],
   },
 ];
 
 // 「あと10点ならど科目が最効率」の計算。
 // ある科目の得点率を+10%pt上げたときの換算点増分が最大の科目を返す。
 export function bestMarginalSubject(plan: UniversityPlan, pct: Record<string, number>, science2: ScienceChoice, social2: SocialChoice) {
+  const rawMax = plan.ctSubjects.reduce((sum, s) => sum + s.points, 0);
+  const scale = rawMax > 0 ? Math.min(1, plan.ctWeight / rawMax) : 1;
   const scored = plan.ctSubjects
-    .map((s) => ({ slot: resolveSlot(s.slot, science2, social2), rawSlot: s.slot, points: s.points, headroom: Math.max(0, 100 - (pct[resolveSlot(s.slot, science2, social2)] ?? 0)) }))
+    .map((s) => ({ slot: s.slot, points: s.points, headroom: Math.max(0, 100 - resolveSlotPct(s.slot, pct, science2, social2)) }))
     .filter((entry) => entry.headroom >= 5); // ほぼ天井の科目は除く
   if (scored.length === 0) return null;
   const best = scored.reduce((a, b) => (b.points > a.points ? b : a));
-  return { slot: best.slot, gainPoints: best.points * 0.1, currentPct: pct[best.slot] ?? 0 };
+  return { slot: best.slot, gainPoints: Math.round(best.points * scale * 0.1), currentPct: resolveSlotPct(best.slot, pct, science2, social2) };
 }

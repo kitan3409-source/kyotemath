@@ -76,7 +76,7 @@ import {
 import { allUnits, diagnosticProblems, unitById, unitsBySubject } from "./os/units";
 import { loadOsState, mergeOsState, nextReviewDue, normalizeOsState, saveOsState, type OsState } from "./os/state";
 import { SCENARIOS, buildPlan, gapToScenario, subjectEstimate, totalEstimate } from "./os/planner";
-import { UNIVERSITIES, bestMarginalSubject, convertedScore } from "./os/universities";
+import { UNIVERSITIES, bestMarginalSubject, convertedScore, slotDisplayName } from "./os/universities";
 
 type Concept = (typeof conceptData.concepts)[number];
 type Tab = "today" | "subjects" | "map" | "practice" | "mock" | "records" | "universities" | "settings";
@@ -864,20 +864,33 @@ export default function Home() {
       const latest = examHistory.filter((result) => result.paper === id).at(-1);
       return latest ? latest.percentage / 100 : null;
     };
+    const recorded = (slotId: string) => {
+      const rows = osState.records
+        .filter((record) => record.slotId === slotId)
+        .sort((a, b) => Date.parse(b.date) - Date.parse(a.date))
+        .slice(0, 3);
+      return rows.length ? rows.reduce((sum, record) => sum + record.score / record.maxScore, 0) / rows.length : null;
+    };
+    const blend = (content: number, ...signals: (number | null)[]) => {
+      const valid = signals.filter((signal): signal is number => signal !== null);
+      return valid.length ? 0.5 * (valid.reduce((sum, signal) => sum + signal, 0) / valid.length) + 0.5 * content : content;
+    };
     const iaContent = pctFor(["I", "A"]);
     const iibcContent = pctFor(["II", "B", "C"]);
-    const iaExam = paper("math1a");
-    const iibcExam = paper("math2bc");
     return {
-      ia: iaExam === null ? iaContent : 0.5 * iaExam + 0.5 * iaContent,
-      iibc: iibcExam === null ? iibcContent : 0.5 * iibcExam + 0.5 * iibcContent,
+      ia: blend(iaContent, paper("math1a"), recorded("math-ia")),
+      iibc: blend(iibcContent, paper("math2bc"), recorded("math-iibc")),
     };
   })();
   const osTotal = totalEstimate(osState, mathEstimate);
-  const planTasks = buildPlan(todayMinutes, osState, nextConcept.id, nextConcept.title, osNowMs);
+  const mathNextDue = dueAtForConcept(nextConcept.id);
+  const mathNextUnitId = isRouteComplete(nextConcept) && !(mathNextDue && Date.parse(mathNextDue) <= osNowMs)
+    ? undefined
+    : nextConcept.id;
+  const planTasks = buildPlan(todayMinutes, osState, mathNextUnitId, nextConcept.title, osNowMs);
   const dueUnits = allUnits.filter((unit) => {
     const state = osState.unitStates[unit.id];
-    return Boolean(state?.dueAt && Date.parse(state.dueAt) <= osNowMs && (state.level ?? 0) >= 1);
+    return Boolean(state?.dueAt && Date.parse(state.dueAt) <= osNowMs && (state.level ?? 0) >= 1 && (state.level ?? 0) < 4);
   });
   const selectedUnit = openUnitId ? unitById.get(openUnitId) ?? null : null;
   const selectedSubject = subjectViewId ? SUBJECT_BY_ID.get(subjectViewId) ?? null : null;
@@ -912,11 +925,11 @@ export default function Home() {
       const duePassed = Boolean(prev.dueAt && Date.parse(prev.dueAt) <= osNowMs);
       let level = prev.level;
       if (correct) {
-        if (prev.level >= 3 && duePassed) level = 4;
-        else level = Math.max(level, Math.min(kindLevel, 3));
+        // 初回正答は問題種別のLvまで。期限後の復習正答で+1ずつ4（定着）まで進む。
+        level = Math.min(4, Math.max(kindLevel, duePassed ? prev.level + 1 : prev.level));
       }
       const dueAt = correct
-        ? (level >= 4 ? nextReviewDue(nowIso, "ok") : currentUnitProblem.kind === "transfer" ? nextReviewDue(nowIso, "ok") : undefined)
+        ? (level >= 4 ? undefined : nextReviewDue(nowIso, "ok"))
         : nextReviewDue(nowIso, "wrong");
       draft.unitStates[selectedUnit.id] = {
         ...prev,
@@ -1863,7 +1876,7 @@ export default function Home() {
     const science2 = osState.scienceChoice ?? "bio";
     const social2 = osState.socialChoice ?? "world";
     const pct: Record<string, number> = {
-      kokugo: Math.round((subjectEstimate("modern", osState) * 100 + subjectEstimate("kobun", osState) * 100 + subjectEstimate("kanbun", osState) * 100) / 3 * 1.2),
+      kokugo: Math.round(Math.max(subjectEstimate("modern", osState), 0.3) * 50 + Math.max(subjectEstimate("kobun", osState), 0.05) * 30 + Math.max(subjectEstimate("kanbun", osState), 0.05) * 20),
       "math-ia": Math.round(mathEstimate.ia * 100),
       "math-iibc": Math.round(mathEstimate.iibc * 100),
       "eng-r": Math.round(subjectEstimate("eng-r", osState) * 100),
@@ -1892,7 +1905,7 @@ export default function Home() {
             <p className="eyebrow accent">{plan.name} {plan.faculty}</p>
             <h2>{plan.track} 共テ換算 <span className="hero-days">{converted.total}</span> / {converted.max}点</h2>
             <p className="hero-description">全体満点 {plan.totalPoints}点（共テ{plan.ctWeight}+個別{plan.individualWeight}）。{plan.individualNotes}</p>
-            {marginal && <p className="hero-description">あと10%pt上げるなら「{SUBJECT_BY_ID.get(marginal.slot as LearningSubjectId)?.shortLabel ?? SCORE_SLOTS.find((s) => s.id === marginal.slot)?.label ?? marginal.slot}」が最も換算点が増えます（+{marginal.gainPoints}点）。</p>}
+            {marginal && <p className="hero-description">あと10%pt上げるなら「{slotDisplayName(marginal.slot) ?? SUBJECT_BY_ID.get(marginal.slot as LearningSubjectId)?.shortLabel ?? SCORE_SLOTS.find((s) => s.id === marginal.slot)?.label ?? marginal.slot}」が最も換算点が増えます（+{marginal.gainPoints}点）。</p>}
           </div>
           <div className="coverage-orb" style={{ background: `conic-gradient(var(--lime) ${Math.min(100, Math.round(converted.total / converted.max * 100))}%, var(--line) 0)` }}>
             <div className="orb-inner"><strong>{Math.round(converted.total / converted.max * 100)}%</strong><span>共テ換算</span></div>
@@ -1903,7 +1916,7 @@ export default function Home() {
           <ul className="uni-list">
             {converted.details.map((detail) => {
               const rawSlot = detail.slot.replace(/（選択）$/, "");
-              const baseLabel = SCORE_SLOTS.find((s) => s.id === rawSlot)?.label
+              const baseLabel = slotDisplayName(rawSlot) ?? SCORE_SLOTS.find((s) => s.id === rawSlot)?.label
                 ?? SUBJECT_BY_ID.get((rawSlot === "science2" ? science2 : rawSlot === "social2" ? social2 : rawSlot) as LearningSubjectId)?.shortLabel
                 ?? rawSlot;
               const resolvedNote = rawSlot === "science2" && science2 === "bio" ? "（生物）" : rawSlot === "science2" && science2 === "chem" ? "（化学）" : rawSlot === "social2" && social2 === "world" ? "（世界史）" : rawSlot === "social2" && social2 === "geo" ? "（地理）" : "";
